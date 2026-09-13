@@ -59,7 +59,7 @@ jobs:
             cp README.md codeactivityhub.service "$dir/"
             tar -czf "codeactivityhub-linux-$arch.tar.gz" -C build/package codeactivityhub
           done
-          ls -la build/*.tar.gz
+          ls -la codeactivityhub-linux-*.tar.gz
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4

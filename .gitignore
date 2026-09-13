@@ -22,3 +22,5 @@ node_modules/
 .env.*
 *.log
 build/
+# 本地打包产物
+*.tar.gz
