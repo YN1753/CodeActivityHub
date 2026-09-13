@@ -1,0 +1,24 @@
+# 任意层级下运行时落下的 SQLite 数据文件
+data/*.db
+data/*.db-shm
+data/*.db-wal
+**/data/*.db
+**/data/*.db-shm
+**/data/*.db-wal
+codeactivityhub-server
+.DS_Store
+# air 热重载产物
+tmp/
+frontend/dist/
+build-errors.log
+.workbuddy
+.idea
+# 前端依赖
+node_modules/
+
+# 本机会话/编辑器与敏感配置
+.zcode/
+.env
+.env.*
+*.log
+build/

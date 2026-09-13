@@ -1,0 +1,17 @@
+[Unit]
+Description=CodeActivityHub Web Application
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/codeactivityhub
+ExecStart=/opt/codeactivityhub/codeactivityhub-server
+Restart=always
+RestartSec=5
+Environment=CODEACTIVITYHUB_ADDR=:2053
+Environment=CODEACTIVITYHUB_DB=/opt/codeactivityhub/data/codeactivityhub.db
+Environment=CODEACTIVITYHUB_FRONTEND_DIST=/opt/codeactivityhub/frontend/dist
+
+[Install]
+WantedBy=multi-user.target

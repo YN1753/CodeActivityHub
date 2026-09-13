@@ -1,0 +1,304 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@tailwind base;
+
+/* =========================================================================
+   设计令牌 —— 浅色简洁风
+   一套灰阶 + 一个强调色（蓝）；状态色只表示状态，不做装饰。
+   ========================================================================= */
+:root {
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-muted: #f4f5f7;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+
+  --text: #111827;
+  --text-muted: #4b5563;
+  --text-faint: #9ca3af;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff4ff;
+  --accent-border: #c7d8fd;
+
+  --ok: #15803d;
+  --ok-soft: #f0fdf4;
+  --ok-border: #bbf7d0;
+
+  --warn: #b45309;
+  --warn-soft: #fffbeb;
+  --warn-border: #fde68a;
+
+  --danger: #b91c1c;
+  --danger-soft: #fef2f2;
+  --danger-border: #fecaca;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Vue 挂载完成前隐藏未编译模板 */
+[v-cloak] {
+  display: none;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* =========================================================================
+   容器
+   ========================================================================= */
+.ui-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.ui-panel {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ui-panel-accent {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+}
+
+.ui-panel-ok {
+  background: var(--ok-soft);
+  border: 1px solid var(--ok-border);
+  border-radius: var(--radius);
+}
+
+.ui-panel-warn {
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius);
+}
+
+.ui-panel-danger {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius);
+}
+
+/* 一行说明文字 */
+.ui-hint {
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+  line-height: 1.6;
+}
+
+/* =========================================================================
+   按钮
+   ========================================================================= */
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-secondary {
+  background: var(--surface);
+  color: var(--text-muted);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.85rem;
+  font-size: 0.8125rem;
+  border: 1px solid var(--border-strong);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* =========================================================================
+   表单
+   ========================================================================= */
+.ui-input {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.8125rem;
+  padding: 0.5rem 0.75rem;
+  width: 100%;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ui-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.ui-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* =========================================================================
+   状态
+   ========================================================================= */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.pill-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+  border-color: var(--ok-border);
+}
+
+.pill-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: var(--warn-border);
+}
+
+.pill-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.pill-muted {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.ui-card:hover {
+  border-color: var(--border-strong);
+}
+
+/* 平台状态小圆点 */
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.dot-ok {
+  background-color: #22c55e;
+}
+
+.dot-warn {
+  background-color: #f59e0b;
+}
+
+.dot-error {
+  background-color: #ef4444;
+}
+
+.dot-muted {
+  background-color: #cbd5e1;
+}
+
+/* =========================================================================
+   表格
+   ========================================================================= */
+.ui-table {
+  width: 100%;
+  text-align: left;
+  font-size: 0.8125rem;
+  border-collapse: collapse;
+}
+
+.ui-table thead th {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-faint);
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1rem;
+}
+
+.ui-table tbody td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1rem;
+  color: var(--text-muted);
+}
+
+.ui-table tbody tr:hover {
+  background: var(--surface-muted);
+}
+
+/* =========================================================================
+   ECharts tooltip（浅色）
+   ========================================================================= */
+.echarts-tooltip {
+  background: #ffffff !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  padding: 8px 12px !important;
+  box-shadow: 0 4px 16px rgba(16, 24, 40, 0.12) !important;
+  color: var(--text) !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 11px !important;
+  z-index: 99999 !important;
+  pointer-events: none !important;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d8dbe0;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #bcc1c9;
+}
+
+/* utilities 放在最后，保证 w-auto / flex-1 等工具类能覆盖组件默认宽度 */
+@tailwind components;
+@tailwind utilities;

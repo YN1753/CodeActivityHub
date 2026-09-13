@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeActivityHub</title>
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <script type="module" src="/src/main.js"></script>
+</head>
+<body class="antialiased">
+  <div id="app" v-cloak>
+
+    <!-- 连接中 -->
+    <div v-if="isAuthChecking" class="min-h-screen flex items-center justify-center text-sm text-slate-500">
+      正在连接…
+    </div>
+
+    <!-- ================= 未登录 ================= -->
+    <div v-else-if="!isLoggedIn" class="min-h-screen flex items-center justify-center px-4">
+      <div class="w-full max-w-sm">
+        <div class="text-center mb-6">
+          <h1 class="text-xl font-semibold tracking-tight">CodeActivityHub</h1>
+          <p class="text-sm text-slate-500 mt-1">跨平台刷题数据看板</p>
+        </div>
+        <div class="ui-card p-6">
+          <div class="flex gap-1 p-1 rounded-lg bg-slate-100 mb-5">
+            <button type="button" @click="authMode = 'login'; authError = ''"
+                    :class="['flex-1 py-1.5 rounded-md text-sm font-medium transition-colors',
+                             authMode === 'login' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800']">登录</button>
+            <button type="button" @click="authMode = 'register'; authError = ''"
+                    :class="['flex-1 py-1.5 rounded-md text-sm font-medium transition-colors',
+                             authMode === 'register' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800']">注册</button>
+          </div>
+
+          <div v-if="authError" class="mb-4 px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-700">{{ authError }}</div>
+
+          <form @submit.prevent="authMode === 'login' ? handleLogin() : handleRegister()" class="space-y-4">
+            <div>
+              <label class="block text-xs text-slate-500 mb-1.5">用户名</label>
+              <input v-model="authForm.username" type="text" required placeholder="3-32 位" class="ui-input font-mono">
+            </div>
+            <div>
+              <label class="block text-xs text-slate-500 mb-1.5">密码</label>
+              <input v-model="authForm.password" type="password" required placeholder="至少 6 位" class="ui-input font-mono">
+            </div>
+            <div v-if="authMode === 'register'">
+              <label class="block text-xs text-slate-500 mb-1.5">确认密码</label>
+              <input v-model="authForm.confirmPassword" type="password" required class="ui-input font-mono">
+            </div>
+            <button type="submit" :disabled="isAuthLoading" class="btn-primary w-full">
+              {{ isAuthLoading ? '处理中…' : (authMode === 'login' ? '登录' : '注册') }}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= 已登录 ================= -->
+    <template v-if="isLoggedIn">
+
+      <!-- 顶栏：品牌 + 导航 + 状态 -->
+      <header class="sticky top-0 z-30 bg-white border-b border-slate-200">
+        <div class="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-5">
+          <div class="font-semibold tracking-tight shrink-0">CodeActivityHub</div>
+
+          <nav class="flex items-center gap-1 overflow-x-auto">
+            <button v-for="t in [['overview','数据总览'],['contests','比赛日历'],['problems','题库'],
+                                ['submissions','提交记录'],['mistakes','错题集']]"
+                    :key="t[0]" @click="currentTab = t[0]"
+                    :class="['px-3 py-1.5 rounded-lg text-sm whitespace-nowrap transition-colors',
+                             currentTab === t[0] ? 'bg-slate-900 text-white font-medium'
+                                                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100']">
+              {{ t[1] }}<span v-if="t[0]==='mistakes' && mistakes.length"
+                              class="ml-1.5 text-[10px] font-mono opacity-70">{{ mistakes.length }}</span>
+            </button>
+          </nav>
+
+          <div class="ml-auto flex items-center gap-4 shrink-0">
+            <!-- 平台状态 -->
+            <div class="hidden lg:flex items-center gap-3 text-[11px] font-mono text-slate-500">
+              <span class="flex items-center gap-1"><span :class="['dot', 'dot-' + getStatusClass('codeforces')]"></span>CF {{ overview.stats.platforms?.codeforces?.ac || 0 }}</span>
+              <span class="flex items-center gap-1"><span :class="['dot', 'dot-' + getStatusClass('atcoder')]"></span>AT {{ overview.stats.platforms?.atcoder?.ac || 0 }}</span>
+              <span class="flex items-center gap-1"><span :class="['dot', 'dot-' + getStatusClass('luogu')]"></span>LG {{ overview.stats.platforms?.luogu?.ac || 0 }}</span>
+              <span class="flex items-center gap-1"><span :class="['dot', 'dot-' + getStatusClass('acwing')]"></span>AW {{ overview.stats.platforms?.acwing?.ac || 0 }}</span>
+            </div>
+
+            <button @click="syncNow('all')" :disabled="isSyncing" class="btn-primary h-8 px-3 flex items-center gap-1.5">
+              <svg :class="['w-3.5 h-3.5', isSyncing ? 'animate-spin' : '']" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+              </svg>
+              {{ isSyncing ? '同步中' : '刷新' }}
+            </button>
+
+            <div class="relative pl-3 border-l border-slate-200">
+              <button @click="toggleUserMenu"
+                      class="flex items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-slate-100 transition-colors">
+                <span class="w-6 h-6 rounded-full bg-slate-900 text-white text-[11px] font-semibold flex items-center justify-center">
+                  {{ (currentUser?.username || '?').slice(0, 1).toUpperCase() }}
+                </span>
+                <span class="text-sm text-slate-700 hidden md:inline">{{ currentUser?.username }}</span>
+                <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+              </button>
+
+              <!-- 点击其它区域关闭 -->
+              <div v-if="userMenuOpen" class="fixed inset-0 z-40" @click="closeUserMenu"></div>
+              <div v-if="userMenuOpen" class="absolute right-0 top-full mt-2 w-44 ui-card p-1.5 z-50 shadow-lg">
+                <button @click="closeUserMenu(); currentTab = 'settings'"
+                        class="w-full text-left px-3 py-2 rounded-md text-sm text-slate-700 hover:bg-slate-100 flex items-center gap-2">
+                  <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                  </svg>
+                  系统设置
+                </button>
+                <button @click="handleLogout"
+                        class="w-full text-left px-3 py-2 rounded-md text-sm text-rose-700 hover:bg-rose-50 flex items-center gap-2">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+                  </svg>
+                  退出登录
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="max-w-[1400px] mx-auto px-6 py-6">
+        <!-- 告警条 -->
+        <div v-if="warningBanner" class="mb-6 px-4 py-3 rounded-lg bg-rose-50 border border-rose-200 flex items-start justify-between gap-4">
+          <div class="text-xs text-rose-800 leading-relaxed">{{ warningBanner }}</div>
+          <button @click="currentTab = 'settings'" class="text-xs text-rose-700 underline shrink-0">前往设置</button>
+        </div>
+
+        <!-- ============ 数据总览 ============ -->
+        <div v-show="currentTab === 'overview'" class="space-y-6">
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="ui-card p-5">
+              <div class="text-xs text-slate-500">通过题目</div>
+              <div class="mt-2 text-3xl font-semibold tabular-nums">{{ overview.stats.total_ac || 0 }}</div>
+              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px] font-mono text-slate-400 flex flex-wrap gap-x-3">
+                <span>CF {{ overview.stats.platforms?.codeforces?.ac || 0 }}</span>
+                <span>LG {{ overview.stats.platforms?.luogu?.ac || 0 }}</span>
+                <span>AT {{ overview.stats.platforms?.atcoder?.ac || 0 }}</span>
+                <span>AW {{ overview.stats.platforms?.acwing?.ac || 0 }}</span>
+              </div>
+            </div>
+            <div class="ui-card p-5">
+              <div class="text-xs text-slate-500">今日提交</div>
+              <div class="mt-2 text-3xl font-semibold tabular-nums">{{ overview.stats.today_ac || 0 }}<span class="text-base text-slate-400 font-normal"> / {{ overview.stats.today_subs || 0 }}</span></div>
+              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px]" :class="overview.stats.today_ac > 0 ? 'text-emerald-700' : 'text-slate-400'">
+                {{ overview.stats.today_ac > 0 ? '今天已有题目通过' : '今天还没有通过' }}
+              </div>
+            </div>
+            <div class="ui-card p-5">
+              <div class="text-xs text-slate-500">连续打卡</div>
+              <div class="mt-2 text-3xl font-semibold tabular-nums">{{ overview.stats.streak || 0 }}<span class="text-base text-slate-400 font-normal"> 天</span></div>
+              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px] text-slate-400">保持每日做题习惯</div>
+            </div>
+            <div class="ui-card p-5">
+              <div class="text-xs text-slate-500">累计提交</div>
+              <div class="mt-2 text-3xl font-semibold tabular-nums">{{ overview.stats.total_subs || 0 }}</div>
+              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px] text-slate-400 truncate" :title="overview.last_sync_time">
+                同步于 {{ overview.last_sync_time || '暂无' }}
+              </div>
+            </div>
+          </div>
+
+          <!-- 热力图 -->
+          <div class="ui-card p-5">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <h2 class="text-sm font-semibold">刷题热力图</h2>
+              <div class="flex flex-wrap items-center gap-2">
+                <ui-select v-if="availableHeatmapYears.length > 1" dense
+                           :model-value="selectedHeatmapYear"
+                           :options="heatmapYearOptions"
+                           @update:model-value="setHeatmapYear"></ui-select>
+                <span v-else class="pill pill-muted">{{ selectedHeatmapYear }} 年</span>
+                <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
+                  <button v-for="p in [['all','全部'],['codeforces','CF'],['leetcode','LC'],['atcoder','AT'],['luogu','LG'],['acwing','AW']]"
+                          :key="p[0]" @click="setHeatmapFilter(p[0])"
+                          :class="['px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors',
+                                   heatmapFilter === p[0] ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800']">{{ p[1] }}</button>
+                </div>
+              </div>
+            </div>
+            <div class="w-full overflow-x-auto">
+              <div id="heatmap-chart" class="w-full min-w-[760px] h-40"></div>
+            </div>
+            <div class="flex items-center justify-between pt-3 mt-1 border-t border-slate-100">
+              <span class="ui-hint">{{ selectedHeatmapYear }} 年度提交分布</span>
+              <div class="flex items-center gap-1.5 text-[10px] text-slate-400">
+                少
+                <span class="w-3 h-3 rounded-sm bg-[#eef2f7]"></span>
+                <span class="w-3 h-3 rounded-sm bg-[#dbeafe]"></span>
+                <span class="w-3 h-3 rounded-sm bg-[#93c5fd]"></span>
+                <span class="w-3 h-3 rounded-sm bg-[#3b82f6]"></span>
+                <span class="w-3 h-3 rounded-sm bg-[#1d4ed8]"></span>
+                多
+              </div>
+            </div>
+          </div>
+
+          <!-- 图表 -->
+          <div class="grid lg:grid-cols-2 gap-4">
+            <div class="ui-card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold">知识点分布</h2>
+                <span class="ui-hint">按通过题数</span>
+              </div>
+              <div id="tag-bar-chart" class="w-full h-64"></div>
+            </div>
+            <div class="ui-card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold">平台占比</h2>
+                <span class="ui-hint">按通过题数</span>
+              </div>
+              <div id="platform-pie-chart" class="w-full h-64"></div>
+            </div>
+          </div>
+
+          <!-- 近期比赛 -->
+          <div v-if="topUpcomingContests.length > 0" class="ui-card p-5">
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-sm font-semibold">近期比赛 <span class="text-slate-400 font-normal">· {{ upcomingContestsCount }} 场待开赛</span></h2>
+              <button @click="currentTab = 'contests'" class="text-xs text-blue-600 hover:underline">查看全部</button>
+            </div>
+            <div class="grid md:grid-cols-3 gap-3">
+              <a v-for="c in topUpcomingContests" :key="c.id" :href="c.url" target="_blank" rel="noopener noreferrer"
+                 class="block p-4 rounded-lg border border-slate-200 hover:border-blue-300 hover:bg-slate-50 transition-colors">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="pill pill-muted">{{ c.platform }}</span>
+                  <span class="ui-hint">{{ (c.start_time || '').slice(5, 16) }}</span>
+                </div>
+                <div class="text-sm font-medium text-slate-900 line-clamp-2" :title="c.name">{{ c.name }}</div>
+                <div class="mt-2 text-xs" :class="getContestStatus(c) === 'CODING' ? 'text-rose-700 font-medium' : 'text-blue-600'">
+                  {{ formatContestCountdown(c) }}
+                </div>
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 比赛日历 ============ -->
+        <div v-show="currentTab === 'contests'" class="space-y-6">
+          <!-- 工具条：平台筛选 + 搜索 + 刷新（状态筛选由下方分组取代） -->
+          <div class="ui-card p-4 flex flex-wrap items-center gap-2">
+            <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
+              <button v-for="f in [['all','全部'],['codeforces','Codeforces'],['atcoder','AtCoder'],['luogu','洛谷']]" :key="f[0]"
+                      @click="contestFilter = f[0]"
+                      :class="['px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+                               contestFilter === f[0] ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800']">{{ f[1] }}</button>
+            </div>
+            <input v-model="contestSearch" type="text" placeholder="搜索比赛…" class="ui-input w-auto flex-1 min-w-[160px]">
+            <button @click="syncContestsNow" :disabled="isSyncingContests" class="btn-secondary shrink-0">
+              {{ isSyncingContests ? '刷新中…' : '刷新比赛' }}
+            </button>
+          </div>
+
+          <!-- 空状态 -->
+          <div v-if="!liveContests.length && !upcomingContests.length && !pastContests.length" class="ui-card p-12 text-center">
+            <p class="text-sm text-slate-500">没有匹配的比赛</p>
+            <p class="ui-hint mt-1">点右上角「刷新比赛」从各平台拉取最新赛程</p>
+          </div>
+
+          <!-- 进行中 -->
+          <section v-if="liveContests.length" class="space-y-3">
+            <h2 class="text-sm font-semibold flex items-center gap-2">
+              <span class="relative flex h-2 w-2">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+              </span>
+              进行中 <span class="text-slate-400 font-normal">{{ liveContests.length }} 场</span>
+            </h2>
+            <div class="grid gap-3 md:grid-cols-2">
+              <a v-for="c in liveContests" :key="c.id" :href="c.url" target="_blank" rel="noopener noreferrer"
+                 class="ui-card p-4 flex items-center gap-4 !border-rose-200 hover:!border-rose-300 transition-colors">
+                <span :class="['w-2.5 h-2.5 rounded-full shrink-0', contestPlatformDot(c.platform)]"></span>
+                <div class="min-w-0 flex-1">
+                  <div class="font-medium text-slate-900 truncate">{{ c.name }}</div>
+                  <div class="ui-hint mt-0.5">{{ contestPlatformLabel(c.platform) }} · {{ c.duration_str || '—' }} · {{ formatContestDate(c) }} 开始</div>
+                </div>
+                <div class="text-right shrink-0 space-y-1">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700">
+                    <span class="relative flex h-1.5 w-1.5">
+                      <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                      <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-rose-500"></span>
+                    </span>LIVE
+                  </span>
+                  <div class="font-mono text-sm text-rose-700 tabular-nums">剩 {{ formatRemaining(c) }}</div>
+                </div>
+              </a>
+            </div>
+          </section>
+
+          <!-- 即将开始 -->
+          <section v-if="upcomingContests.length" class="space-y-3">
+            <h2 class="text-sm font-semibold">即将开始 <span class="text-slate-400 font-normal">{{ upcomingContests.length }} 场</span></h2>
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <a v-for="c in shownUpcomingContests" :key="c.id" :href="c.url" target="_blank" rel="noopener noreferrer"
+                 class="ui-card p-4 flex flex-col gap-2.5 hover:border-blue-300 transition-colors">
+                <div class="flex items-center gap-2">
+                  <span :class="['w-2 h-2 rounded-full shrink-0', contestPlatformDot(c.platform)]"></span>
+                  <span class="text-xs text-slate-500">{{ contestPlatformLabel(c.platform) }}</span>
+                  <span v-if="c.rule_type" class="pill pill-muted ml-auto text-[10px] max-w-[140px] truncate">{{ c.rule_type }}</span>
+                </div>
+                <div class="font-medium text-slate-900 leading-snug line-clamp-2 min-h-[2.5em]" :title="c.name">{{ c.name }}</div>
+                <div class="ui-hint">{{ formatContestDate(c) }} · {{ c.duration_str || '—' }}</div>
+                <div class="mt-auto pt-3 border-t border-slate-100 flex items-baseline gap-1 font-mono tabular-nums"
+                     :class="formatCountdownTo(c).d === 0 ? 'text-blue-700' : 'text-slate-700'">
+                  <template v-if="formatCountdownTo(c).d > 0">
+                    <span class="text-lg font-semibold">{{ formatCountdownTo(c).d }}</span><span class="text-[11px] text-slate-400 font-sans mr-0.5">天</span>
+                  </template>
+                  <span class="text-lg font-semibold">{{ formatCountdownTo(c).h }}:{{ formatCountdownTo(c).m }}:{{ formatCountdownTo(c).s }}</span>
+                  <span class="ml-auto text-[10px] text-slate-400 font-sans">后开赛</span>
+                </div>
+              </a>
+            </div>
+            <button v-if="upcomingContests.length > shownUpcomingContests.length" @click="showAllUpcoming = true"
+                    class="w-full ui-card py-2.5 text-xs text-blue-600 hover:bg-slate-50">
+              显示更多（还有 {{ upcomingContests.length - 24 }} 场）
+            </button>
+            <button v-else-if="showAllUpcoming && upcomingContests.length > 24" @click="showAllUpcoming = false"
+                    class="w-full ui-card py-2.5 text-xs text-slate-500 hover:bg-slate-50">收起</button>
+          </section>
+
+          <!-- 已结束 -->
+          <section v-if="pastContests.length" class="space-y-3">
+            <h2 class="text-sm font-semibold">已结束 <span class="text-slate-400 font-normal">{{ pastContests.length }} 场</span></h2>
+            <div class="ui-card divide-y divide-slate-100 overflow-hidden">
+              <a v-for="c in shownPastContests" :key="c.id" :href="c.url" target="_blank" rel="noopener noreferrer"
+                 class="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 transition-colors">
+                <span class="font-mono text-xs text-slate-400 w-24 shrink-0">{{ formatContestDate(c).slice(0, 5) }}</span>
+                <span class="flex-1 min-w-0 truncate text-sm text-slate-600">{{ c.name }}</span>
+                <span class="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 shrink-0">
+                  <span :class="['w-1.5 h-1.5 rounded-full', contestPlatformDot(c.platform)]"></span>{{ contestPlatformLabel(c.platform) }}
+                </span>
+                <span class="font-mono text-xs text-slate-400 w-20 text-right shrink-0">{{ c.duration_str || '' }}</span>
+              </a>
+              <button v-if="pastContests.length > shownPastContests.length" @click="showAllPast = true"
+                      class="w-full py-2.5 text-xs text-blue-600 hover:bg-slate-50">
+                显示更多（还有 {{ pastContests.length - 8 }} 场）
+              </button>
+              <button v-else-if="showAllPast && pastContests.length > 8" @click="showAllPast = false"
+                      class="w-full py-2.5 text-xs text-slate-500 hover:bg-slate-50">收起</button>
+            </div>
+          </section>
+        </div>
+
+        <!-- ============ 题库 ============ -->
+        <div v-show="currentTab === 'problems'" class="space-y-4">
+          <!-- 工具栏：平台切换与刷新 -->
+          <div class="ui-card p-4 flex flex-wrap items-center gap-2">
+            <ui-select :model-value="problemsPlatform"
+                       :options="problemPlatformOptions"
+                       @update:model-value="changeProblemsPlatform"></ui-select>
+            <button @click="loadProblems" :disabled="isLoadingProblems" class="btn-secondary flex items-center gap-1.5">
+              <svg :class="['w-3.5 h-3.5', isLoadingProblems ? 'animate-spin' : '']" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+              </svg>
+              {{ isLoadingProblems ? '加载中…' : '刷新题库' }}
+            </button>
+            <span class="ml-auto ui-hint">数据实时读取平台公开接口</span>
+          </div>
+
+          <!-- 题目列表 -->
+          <div class="ui-card overflow-hidden">
+            <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-slate-200">
+              <h2 class="text-sm font-semibold">题目列表
+                <span class="pill pill-muted ml-2 align-middle">共 {{ problemsTotal }} 题</span>
+              </h2>
+              <div class="flex items-center gap-1.5 text-xs text-slate-400">
+                每页
+                <ui-select :model-value="problemsLimit" :options="pageSizeOptions" dense @update:model-value="changeProblemsLimit"></ui-select>
+              </div>
+            </div>
+
+            <div v-if="isLoadingProblems" class="py-14">
+              <div class="flex flex-col items-center gap-2 text-slate-400">
+                <svg class="w-6 h-6 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span class="text-sm">正在读取公开题库…</span>
+              </div>
+            </div>
+            <div v-else-if="problems.length === 0" class="py-14">
+              <div class="flex flex-col items-center gap-1.5 text-center">
+                <svg class="w-8 h-8 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"></path>
+                </svg>
+                <div class="text-sm text-slate-400">暂无题目或该平台接口不可用</div>
+                <div class="text-xs text-slate-400">试试切换平台，或点击「刷新题库」重试</div>
+              </div>
+            </div>
+            <div v-else class="overflow-x-auto">
+              <table class="ui-table">
+                <thead><tr><th class="w-28">编号</th><th>题目</th><th class="w-32">难度</th><th>标签</th></tr></thead>
+                <tbody>
+                  <tr v-for="p in problems" :key="p.platform + p.id">
+                    <td class="font-mono text-blue-600">{{ p.id }}</td>
+                    <td><a :href="p.url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">{{ p.title }}</a></td>
+                    <td class="text-xs" :class="difficultyClass(p.difficulty || p.rating)">{{ p.difficulty || (p.rating ? p.rating : '-') }}</td>
+                    <td>
+                      <div class="flex flex-wrap gap-1">
+                        <span v-for="t in (p.tags || []).slice(0, 3)" :key="t" class="pill pill-muted">{{ t }}</span>
+                        <span v-if="p.tags && p.tags.length > 3" class="text-[10px] text-slate-400 self-center">+{{ p.tags.length - 3 }}</span>
+                        <span v-if="!p.tags || p.tags.length === 0" class="text-slate-400">-</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-200 text-xs text-slate-500">
+              <button @click="changeProblemsPage(-1)" :disabled="problemsPage <= 1 || isLoadingProblems" class="btn-secondary text-xs py-1">上一页</button>
+              <span class="font-mono tabular-nums">{{ problemsPage }} / {{ totalProblemPages }}</span>
+              <button @click="changeProblemsPage(1)" :disabled="problemsPage >= totalProblemPages || isLoadingProblems" class="btn-secondary text-xs py-1">下一页</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 提交记录 ============ -->
+        <div v-show="currentTab === 'submissions'" class="space-y-4">
+          <!-- 筛选工具栏：第一行时间范围，第二行筛选条件与搜索 -->
+          <div class="ui-card p-4 space-y-3">
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
+                <button v-for="d in [['all','全部'],['today','今天'],['7d','近7天'],['30d','近30天'],['year','今年'],['custom','自定义']]" :key="d[0]"
+                        @click="setDateFilter(d[0])"
+                        :class="['px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+                                 dateFilter === d[0] ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800']">{{ d[1] }}</button>
+              </div>
+              <div v-if="dateFilter === 'custom'" class="flex items-center gap-1.5 text-xs text-slate-500">
+                <input type="date" v-model="startDate" @change="dateFilter = 'custom'" class="ui-input w-auto text-xs py-1">
+                <span>至</span>
+                <input type="date" v-model="endDate" @change="dateFilter = 'custom'" class="ui-input w-auto text-xs py-1">
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <ui-select v-model="subFilter" dense :options="subPlatformOptions"></ui-select>
+              <ui-select v-model="verdictFilter" dense :options="verdictOptions"></ui-select>
+              <ui-select v-model="selectedTag" dense :options="tagFilterOptions"></ui-select>
+              <div class="relative flex-1 min-w-[180px]">
+                <svg class="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"></path>
+                </svg>
+                <input v-model="searchKeyword" type="text" placeholder="搜索题号 / 标题 / 语言…" class="ui-input w-full pl-8 text-xs py-1">
+              </div>
+              <button @click="resetFilters" class="flex items-center gap-1 text-xs text-slate-400 hover:text-blue-600 shrink-0 transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"></path>
+                </svg>
+                重置
+              </button>
+            </div>
+          </div>
+
+          <!-- 提交列表 -->
+          <div class="ui-card overflow-hidden">
+            <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-slate-200">
+              <h2 class="text-sm font-semibold">提交记录
+                <span class="pill pill-muted ml-2 align-middle">共 {{ filteredSubmissions.length }} 条</span>
+              </h2>
+              <div class="flex items-center gap-1.5 text-xs text-slate-400">
+                每页
+                <ui-select :model-value="pageSize" :options="pageSizeOptions" dense @update:model-value="changePageSize"></ui-select>
+              </div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="ui-table">
+                <thead>
+                  <tr>
+                    <th>题目</th><th class="w-28">状态</th><th class="w-28">难度</th>
+                    <th>标签</th><th class="w-28">语言</th><th class="w-36">时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="sub in paginatedSubmissions" :key="sub.id">
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span :class="['pill shrink-0',
+                                       sub.platform === 'codeforces' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                       sub.platform === 'atcoder' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                                       sub.platform === 'luogu' ? 'bg-sky-50 text-sky-700 border-sky-200' :
+                                       sub.platform === 'leetcode' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                                       'bg-indigo-50 text-indigo-700 border-indigo-200']">{{ platformBadge(sub.platform) }}</span>
+                        <a v-if="sub.submission_url" :href="sub.submission_url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">
+                          <span class="font-mono text-xs text-slate-400 mr-1">{{ sub.problem_id }}</span>{{ sub.problem_title }}
+                        </a>
+                        <span v-else class="text-slate-900"><span class="font-mono text-xs text-slate-400 mr-1">{{ sub.problem_id }}</span>{{ sub.problem_title }}</span>
+                      </div>
+                    </td>
+                    <td><span :class="['pill', verdictPillClass(sub.verdict)]">{{ sub.verdict }}</span></td>
+                    <td class="text-xs" :class="difficultyClass(sub.difficulty)">{{ sub.difficulty || '-' }}</td>
+                    <td>
+                      <div class="flex flex-wrap gap-1">
+                        <span v-for="t in (sub.tags || []).slice(0, 3)" :key="t" class="pill pill-muted">{{ t }}</span>
+                        <span v-if="sub.tags && sub.tags.length > 3" class="text-[10px] text-slate-400 self-center">+{{ sub.tags.length - 3 }}</span>
+                      </div>
+                    </td>
+                    <td class="font-mono text-xs">{{ sub.code_language || '-' }}</td>
+                    <td class="font-mono text-xs whitespace-nowrap" :title="sub.submitted_at">{{ formatTimeAgo(sub.submitted_at) }}</td>
+                  </tr>
+                  <tr v-if="paginatedSubmissions.length === 0">
+                    <td colspan="6" class="py-14">
+                      <div class="flex flex-col items-center gap-1.5 text-center">
+                        <svg class="w-8 h-8 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
+                        </svg>
+                        <div class="text-sm text-slate-400">{{ hasActiveFilters ? '没有符合筛选条件的提交' : '还没有提交记录' }}</div>
+                        <div class="text-xs text-slate-400">{{ hasActiveFilters ? '试试放宽筛选条件，或点击右上角「重置」' : '去 OJ 提交一道题，记录会自动同步到这里' }}</div>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-200 text-xs text-slate-500">
+              <button @click="currentPage = Math.max(1, currentPage - 1)" :disabled="currentPage <= 1" class="btn-secondary text-xs py-1">上一页</button>
+              <span class="font-mono tabular-nums">{{ currentPage }} / {{ totalPages }}</span>
+              <button @click="currentPage = Math.min(totalPages, currentPage + 1)" :disabled="currentPage >= totalPages" class="btn-secondary text-xs py-1">下一页</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 错题集 ============ -->
+        <div v-show="currentTab === 'mistakes'" class="space-y-4">
+          <!-- 错题概览：全量统计，不受下方列表筛选影响 -->
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="ui-card p-4">
+              <div class="text-xs text-slate-500">待攻克错题</div>
+              <div class="mt-2 text-2xl font-semibold tabular-nums">{{ mistakeStats.total }}</div>
+              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px] font-mono text-slate-400 flex flex-wrap gap-x-2.5">
+                <span v-for="chip in mistakePlatformChips.slice(1)" :key="chip.value">{{ chip.label }} {{ mistakeStats.byPlatform[chip.value] || 0 }}</span>
+              </div>
+            </div>
+            <div class="ui-card p-4">
+              <div class="text-xs text-slate-500">顽固错题</div>
+              <div class="mt-2 text-2xl font-semibold tabular-nums">{{ mistakeStats.stubborn }}</div>
+              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px]" :class="mistakeStats.stubborn > 0 ? 'text-rose-700' : 'text-slate-400'">
+                {{ mistakeStats.stubborn > 0 ? '失败 ≥ 3 次，建议优先复盘' : '暂无失败 3 次及以上的题' }}
+              </div>
+            </div>
+            <div class="ui-card p-4">
+              <div class="text-xs text-slate-500">近 7 天新增</div>
+              <div class="mt-2 text-2xl font-semibold tabular-nums">{{ mistakeStats.recent }}</div>
+              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px]" :class="mistakeStats.recent > 0 ? 'text-amber-700' : 'text-slate-400'">
+                {{ mistakeStats.recent > 0 ? '最近 7 天有新的失败记录' : '近 7 天没有新的失败' }}
+              </div>
+            </div>
+            <div class="ui-card p-4">
+              <div class="text-xs text-slate-500">最难缠一题</div>
+              <div class="mt-2 text-2xl font-semibold tabular-nums">{{ mistakeStats.worst ? mistakeStats.worst.fail_times : 0 }}<span class="text-base text-slate-400 font-normal"> 次</span></div>
+              <div v-if="mistakeStats.worst" class="mt-3 pt-3 border-t border-slate-100 text-[11px] font-mono text-slate-400 truncate" :title="mistakeStats.worst.problem_title">
+                {{ mistakeStats.worst.problem_id }} {{ mistakeStats.worst.problem_title }}
+              </div>
+              <div v-else class="mt-3 pt-3 border-t border-slate-100 text-[11px] text-slate-400">暂无错题记录</div>
+            </div>
+          </div>
+
+          <!-- 错题列表 -->
+          <div class="ui-card overflow-hidden">
+            <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-slate-200">
+              <h2 class="text-sm font-semibold">错题列表
+                <span class="pill pill-muted ml-2 align-middle">共 {{ filteredMistakes.length }} 题</span>
+              </h2>
+              <div class="flex flex-wrap items-center gap-2">
+                <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
+                  <button v-for="chip in mistakePlatformChips" :key="chip.value" @click="setMistakePlatform(chip.value)"
+                          :class="['px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors',
+                                   mistakePlatformFilter === chip.value ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800']">{{ chip.label }}</button>
+                </div>
+                <ui-select :model-value="mistakeSort" :options="mistakeSortOptions" dense @update:model-value="setMistakeSort"></ui-select>
+              </div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="ui-table">
+                <thead><tr><th>题目</th><th class="w-28">最近判定</th><th class="w-28">难度</th><th class="w-24">失败次数</th><th class="w-36">最后尝试</th></tr></thead>
+                <tbody>
+                  <tr v-for="item in filteredMistakes" :key="item.platform + item.problem_id">
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span :class="['pill shrink-0',
+                                       item.platform === 'codeforces' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                       item.platform === 'atcoder' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                                       item.platform === 'luogu' ? 'bg-sky-50 text-sky-700 border-sky-200' :
+                                       'bg-indigo-50 text-indigo-700 border-indigo-200']">{{ platformBadge(item.platform) }}</span>
+                        <a v-if="item.submission_url" :href="item.submission_url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">
+                          <span class="font-mono text-xs text-slate-400 mr-1">{{ item.problem_id }}</span>{{ item.problem_title }}
+                        </a>
+                        <span v-else><span class="font-mono text-xs text-slate-400 mr-1">{{ item.problem_id }}</span>{{ item.problem_title }}</span>
+                      </div>
+                    </td>
+                    <td><span :class="['pill', verdictPillClass(item.verdict)]">{{ item.verdict || 'UNKNOWN' }}</span></td>
+                    <td class="text-xs" :class="difficultyClass(item.difficulty)">{{ item.difficulty || '-' }}</td>
+                    <td class="whitespace-nowrap">
+                      <span class="font-mono text-sm font-medium" :class="item.fail_times >= 3 ? 'text-rose-700' : 'text-slate-600'">{{ item.fail_times }}</span>
+                      <span class="text-xs text-slate-400 ml-0.5">次</span>
+                    </td>
+                    <td class="font-mono text-xs whitespace-nowrap" :title="item.submitted_at">{{ formatTimeAgo(item.submitted_at) }}</td>
+                  </tr>
+                  <tr v-if="filteredMistakes.length === 0">
+                    <td colspan="5" class="py-14">
+                      <div class="flex flex-col items-center gap-1.5 text-center">
+                        <svg class="w-8 h-8 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <div class="text-sm text-slate-400">{{ mistakePlatformFilter !== 'all' ? '该平台暂无待攻克的错题' : '太棒了，暂无未攻克的错题' }}</div>
+                        <div class="text-xs text-slate-400">{{ mistakePlatformFilter !== 'all' ? '换个平台看看，或切回「全部」' : '保持节奏，AC 过的题目不会出现在这里' }}</div>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 系统设置 ============ -->
+        <div v-show="currentTab === 'settings'" class="space-y-6">
+
+          <section class="space-y-3">
+            <div class="flex items-baseline justify-between">
+              <h2 class="text-sm font-semibold">平台账号</h2>
+              <span class="ui-hint">同一平台可保存多个，单选切换启用的账号</span>
+            </div>
+            <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+              <div v-for="(meta, key) in platformMeta" :key="key" class="ui-card p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full" :class="meta.dot"></span>
+                    <span class="text-sm font-semibold">{{ meta.label }}</span>
+                  </div>
+                  <span class="ui-hint">{{ accountsFor(key).length }} 个账号</span>
+                </div>
+
+                <div class="space-y-1.5">
+                  <div v-for="acc in accountsFor(key)" :key="acc.id"
+                       :class="['p-2.5 rounded-lg border text-xs space-y-1',
+                                acc.selected ? 'bg-blue-50/60 border-blue-200' : 'bg-slate-50 border-slate-200']">
+                    <div class="flex items-center justify-between gap-2">
+                      <label class="flex items-center gap-2 cursor-pointer min-w-0">
+                        <input type="radio" :name="'account-' + key" :checked="acc.selected" @change="selectAccount(acc.id)" class="accent-blue-600">
+                        <span class="truncate font-medium" :class="acc.selected ? 'text-blue-700' : 'text-slate-700'">{{ acc.name }}</span>
+                      </label>
+                      <div class="flex items-center gap-1 shrink-0">
+                        <button @click="verifyAccount(acc.id)" :disabled="isVerifyingAccount[acc.id]"
+                                class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100 disabled:opacity-50">
+                          {{ isVerifyingAccount[acc.id] ? '验证中' : '验证' }}
+                        </button>
+                        <button @click="deleteAccount(acc.id)"
+                                class="px-2 py-0.5 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100">删除</button>
+                      </div>
+                    </div>
+                    <div class="flex items-center justify-between gap-2 font-mono text-[11px] text-slate-400">
+                      <span class="truncate">{{ acc.handle }}</span>
+                      <span>{{ acc.cookie_hint }}</span>
+                    </div>
+                    <div v-if="acc.message" class="text-[11px] truncate"
+                         :class="acc.status === 'ok' ? 'text-emerald-700' : acc.status === 'error' ? 'text-rose-700' : 'text-slate-400'"
+                         :title="acc.message">{{ acc.selected ? '● 启用中 · ' : '' }}{{ acc.message }}</div>
+                  </div>
+                  <div v-if="accountsFor(key).length === 0" class="text-xs text-slate-400">尚未保存账号</div>
+                </div>
+
+                <div class="pt-3 border-t border-slate-100 space-y-2">
+                  <input v-model="accountForms[key].name" type="text" placeholder="备注名（可选）" class="ui-input text-xs py-1.5">
+                  <input v-model="accountForms[key].handle" type="text" :placeholder="meta.handlePlaceholder" class="ui-input font-mono text-xs py-1.5">
+                  <input v-if="meta.cookie" v-model="accountForms[key].cookie" type="text" :placeholder="meta.cookiePlaceholder" class="ui-input font-mono text-xs py-1.5">
+                  <div class="flex gap-2">
+                    <button @click="addAccount(key, true)" class="btn-primary flex-1 py-1.5 text-xs">保存并验证</button>
+                    <button @click="addAccount(key, false)" class="btn-secondary py-1.5 text-xs">仅保存</button>
+                  </div>
+                  <p class="ui-hint">{{ meta.authText }}</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 长效 Token -->
+          <section class="space-y-3">
+            <div class="flex items-baseline justify-between">
+              <h2 class="text-sm font-semibold">浏览器脚本 Token</h2>
+              <button @click="createIngestToken" :disabled="isIssuingToken" class="btn-primary text-xs">
+                {{ isIssuingToken ? '生成中…' : '生成新 Token' }}
+              </button>
+            </div>
+            <div class="ui-card p-4 space-y-3">
+              <p class="ui-hint">
+                Token 独立于登录会话、长期有效，只用于提交记录接入（其他接口返回 403）。
+                明文只在生成或轮换时显示一次，之后仅能看到提示与最后使用时间。
+              </p>
+              <div v-if="freshToken" class="p-3 rounded-lg bg-amber-50 border border-amber-200 space-y-2">
+                <div class="text-xs font-medium text-amber-800">「{{ freshTokenName }}」的新 Token —— 只显示这一次，请立即复制</div>
+                <div class="flex flex-col sm:flex-row gap-2">
+                  <input :value="freshToken" readonly @focus="$event.target.select()" class="ui-input font-mono text-xs flex-1">
+                  <button @click="copyFreshToken" class="btn-primary text-xs whitespace-nowrap">复制</button>
+                  <button @click="dismissFreshToken" class="btn-secondary text-xs whitespace-nowrap">我已保存</button>
+                </div>
+              </div>
+
+              <div class="space-y-1.5">
+                <div v-for="tk in ingestTokens" :key="tk.id"
+                     :class="['p-2.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs',
+                              isTokenActive(tk) ? 'border-slate-200 bg-slate-50' : 'border-slate-200 opacity-60']">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                      <span class="font-medium" :class="isTokenActive(tk) ? 'text-slate-900' : 'text-slate-400'">{{ tk.name }}</span>
+                      <span :class="['pill', isTokenActive(tk) ? 'pill-ok' : 'pill-error']">{{ isTokenActive(tk) ? '生效中' : '已吊销' }}</span>
+                    </div>
+                    <div class="font-mono text-[11px] text-slate-400 mt-0.5">
+                      {{ tk.token_hint }}•••• · 创建 {{ (tk.created_at || '').slice(0, 10) }} · 最后使用 {{ tk.last_used_at ? formatTimeAgo(tk.last_used_at) : '从未使用' }}
+                    </div>
+                  </div>
+                  <div v-if="isTokenActive(tk)" class="flex gap-1.5 shrink-0">
+                    <button @click="rotateIngestToken(tk)" :disabled="tokenActionId === tk.id" class="btn-secondary text-[11px] py-1">轮换</button>
+                    <button @click="revokeIngestToken(tk)" :disabled="tokenActionId === tk.id" class="px-2 py-1 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 disabled:opacity-50">吊销</button>
+                  </div>
+                </div>
+                <div v-if="ingestTokens.length === 0" class="text-xs text-slate-400">还没有 Token，点右上角「生成新 Token」。</div>
+              </div>
+            </div>
+          </section>
+
+          <div class="grid lg:grid-cols-2 gap-4">
+            <!-- 修改密码 -->
+            <section class="ui-card p-4 space-y-3">
+              <h2 class="text-sm font-semibold">修改密码</h2>
+              <div class="space-y-2">
+                <input v-model="pwdForm.oldPassword" type="password" placeholder="原密码" class="ui-input font-mono">
+                <div class="grid sm:grid-cols-2 gap-2">
+                  <input v-model="pwdForm.newPassword" type="password" placeholder="新密码（至少 6 位）" class="ui-input font-mono">
+                  <input v-model="pwdForm.confirmNewPassword" type="password" placeholder="再次输入新密码" class="ui-input font-mono">
+                </div>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <p class="ui-hint">修改成功后所有登录会话与脚本 Token 都会被吊销。</p>
+                <button @click="handleChangePassword" :disabled="isChangingPwd" class="btn-secondary text-xs shrink-0">
+                  {{ isChangingPwd ? '正在修改…' : '确认修改' }}
+                </button>
+              </div>
+            </section>
+
+            <!-- 说明 -->
+            <section class="ui-panel p-4 space-y-1.5">
+              <div class="text-xs font-semibold text-slate-900">数据来源说明</div>
+              <p class="ui-hint">看板不在后台轮询：历史数据在你点击「刷新看板」时通过各平台公开接口读取；提交后的即时结果由长效 Token + 浏览器脚本推送。</p>
+              <p class="ui-hint">洛谷的 <code class="text-sky-700">__client_id</code> 保存在本地数据库，只用于以你的身份向洛谷读取提交记录，不会发送给其他站点。</p>
+              <div class="pt-2 flex justify-end border-t border-slate-200">
+                <button @click="saveSettingsAndSync" :disabled="isSaving" class="btn-primary text-xs">
+                  {{ isSaving ? '正在保存并同步…' : '保存并同步' }}
+                </button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </template>
+
+    <!-- 全局提示 -->
+    <div v-if="toast.show"
+         class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg shadow-lg border text-sm font-medium flex items-center gap-2"
+         :class="toastClass">
+      <span>{{ toastIcon }}</span><span>{{ toast.message }}</span>
+    </div>
+  </div>
+
+  <!-- ui-select 组件模板：与 ui-card 同风格的实色下拉，替代原生 select 的系统弹层 -->
+  <script type="text/x-template" id="ui-select-tpl">
+    <div ref="root" class="relative inline-block">
+      <button type="button" ref="trigger" :disabled="disabled"
+              @click="toggle" @keydown="onKeydown"
+              aria-haspopup="listbox" :aria-expanded="open ? 'true' : 'false'"
+              :class="['ui-input w-auto flex items-center justify-between gap-2 text-left',
+                       dense ? 'py-1 text-xs' : 'text-xs']">
+        <span class="truncate" :class="currentOption ? '' : 'text-slate-400'">{{ currentLabel }}</span>
+        <svg :class="['w-3 h-3 shrink-0 text-slate-400 transition-transform', open ? 'rotate-180' : '']"
+             fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+        </svg>
+      </button>
+
+      <div v-if="open" ref="popup" role="listbox"
+           :class="['absolute z-50 mt-1 ui-card p-1.5 shadow-lg min-w-full max-h-60 overflow-y-auto',
+                    dropUp ? 'bottom-full mb-1' : 'top-full',
+                    alignRight ? 'right-0' : 'left-0']">
+        <button v-for="(o, i) in options" :key="o.value" type="button" role="option"
+                :data-index="i" :aria-selected="o.value === modelValue ? 'true' : 'false'"
+                @click="choose(o)" @mouseenter="highlight = i"
+                :class="['w-full text-left px-3 py-2 rounded-md text-xs flex items-center justify-between gap-2 whitespace-nowrap',
+                         i === highlight ? 'bg-slate-100' : '',
+                         o.value === modelValue ? 'text-blue-600 font-medium' : 'text-slate-700']">
+          <span class="truncate">{{ o.label }}</span>
+          <svg v-if="o.value === modelValue" class="w-3.5 h-3.5 shrink-0 text-blue-600"
+               fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </script>
+</body>
+</html>

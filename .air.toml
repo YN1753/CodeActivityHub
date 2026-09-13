@@ -1,0 +1,41 @@
+# air（Go 热重载）配置 — https://github.com/air-verse/air
+# 用法：在项目根目录执行 `air`，然后访问 http://127.0.0.1:2053
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  # 前端模板（frontend/index.html + src/App.js）需要编译进 frontend/dist 才会被后端服务，
+  # 脚本内部会判断是否有真实变更，没变就跳过，不拖慢纯后端改动。
+  pre_cmd = ["sh scripts/dev-build-frontend.sh"]
+  cmd = "go build -o ./tmp/server ./backend/cmd/server"
+  bin = "./tmp/server"
+  # 监听前端源文件，改 HTML/JS/CSS 也能自动重建 dist 并重启
+  include_ext = ["go", "html", "js", "css", "svg"]
+  exclude_dir = [
+    "tmp",
+    "data",
+    "scripts",
+    "frontend/node_modules",
+    "frontend/dist",
+    ".git",
+    ".idea",
+    ".workbuddy",
+  ]
+  exclude_regex = ["_test\\.go"]
+  exclude_unchanged = true
+  follow_symlink = false
+  log = "build-errors.log"
+  # 连续保存时合并触发，避免抖一下就重新编译
+  delay = 800
+  # 构建失败时保留旧进程继续运行，端口不会掉
+  stop_on_error = false
+  send_interrupt = true
+  kill_delay = 800
+
+[log]
+  time = true
+  main_only = false
+
+[misc]
+  clean_on_exit = true
