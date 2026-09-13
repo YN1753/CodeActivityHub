@@ -108,7 +108,8 @@ go run ./backend/cmd/server
 - `POST /api/ingest/tokens/:id/rotate`：轮换，旧值立即失效
 - `DELETE /api/ingest/tokens/:id`：吊销
 - `POST /api/sync`：用户主动触发的手动历史提交同步（Codeforces、LeetCode、AtCoder 等公开接口）
-- `GET /api/problems?platform=codeforces&page=1&limit=30`：按需读取题库
+- `GET /api/problems?platform=…&keyword=…&difficulty=…&tag=…&solved=…`：检索本地题库（关键词/难度/标签/已解决，均走 SQL）
+- `POST /api/problems/sync?platform=…`：手动触发该平台题库全量同步（后台执行、边拉边入库，进度在 `/api/problems` 的 `sync` 字段）
 - `GET /api/contests?platform=all`：按需读取比赛日历
 - `POST /api/verify`：按需验证公开用户账号
 

@@ -190,6 +190,13 @@ const app = createApp({
     const problemsTotal = ref(0);
     const totalProblemPages = ref(1);
     const isLoadingProblems = ref(false);
+    // 题库检索与同步：数据已全量入库，关键词/难度/标签/解决状态在服务端 SQL 过滤
+    const problemsKeyword = ref("");
+    const problemsDifficulty = ref("");
+    const problemsTag = ref("");
+    const problemsSolved = ref("all"); // 'all' | 'solved' | 'unsolved'
+    const problemsFacets = ref({ difficulties: [], tags: [], solved: 0, total: 0, updated_at: "" });
+    const problemSync = ref({});
     const contestFilter = ref("all"); // 'all', 'codeforces', 'atcoder', 'luogu'
     const contestSearch = ref("");
     const isSyncingContests = ref(false);
@@ -876,13 +883,28 @@ const app = createApp({
     const loadProblems = async () => {
       isLoadingProblems.value = true;
       try {
-        const res = await apiFetch(`/api/problems?platform=${encodeURIComponent(problemsPlatform.value)}&page=${problemsPage.value}&limit=${problemsLimit.value}`);
+        const params = new URLSearchParams({
+          platform: problemsPlatform.value,
+          page: problemsPage.value,
+          limit: problemsLimit.value,
+          keyword: problemsKeyword.value,
+          difficulty: problemsDifficulty.value,
+          tag: problemsTag.value,
+          solved: problemsSolved.value,
+        });
+        const res = await apiFetch(`/api/problems?${params.toString()}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || data.detail || "题库加载失败");
         problems.value = data.problems || [];
         problemsTotal.value = data.total || 0;
         if (data.limit) problemsLimit.value = data.limit;
         totalProblemPages.value = Math.max(1, Math.ceil((data.total || 0) / (data.limit || problemsLimit.value)));
+        problemsFacets.value = data.facets || problemsFacets.value;
+        const prev = problemSync.value;
+        problemSync.value = data.sync || {};
+        if (problemSync.value.error && !prev.error) {
+          showToast("题库同步失败: " + problemSync.value.error, "error");
+        }
       } catch (e) {
         problems.value = [];
         showToast("加载题库失败: " + e.message, "error");
@@ -902,6 +924,70 @@ const app = createApp({
       problemsPage.value = 1;
       loadProblems();
     };
+
+    // ---------- 题库检索与同步 ----------
+    const problemDifficultyOptions = computed(() => [
+      { value: "", label: "全部难度" },
+      ...(problemsFacets.value.difficulties || []).map(d => ({ value: d.value, label: `${d.value}（${d.count}）` }))
+    ]);
+    const problemTagOptions = computed(() => [
+      { value: "", label: "全部标签" },
+      ...(problemsFacets.value.tags || []).map(t => ({ value: t.value, label: `${t.value}（${t.count}）` }))
+    ]);
+    const problemSolvedOptions = [
+      { value: "all", label: "全部" },
+      { value: "unsolved", label: "未解决" },
+      { value: "solved", label: "已解决" }
+    ];
+
+    const hasProblemsFilters = computed(() =>
+      !!(problemsKeyword.value.trim() || problemsDifficulty.value || problemsTag.value || problemsSolved.value !== "all"));
+
+    const resetProblemsFilters = () => {
+      problemsKeyword.value = "";
+      problemsDifficulty.value = "";
+      problemsTag.value = "";
+      problemsSolved.value = "all";
+      problemsPage.value = 1;
+      loadProblems();
+    };
+
+    const syncProblems = async () => {
+      try {
+        const res = await apiFetch(`/api/problems/sync?platform=${encodeURIComponent(problemsPlatform.value)}`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || data.detail || "同步启动失败");
+        problemSync.value = data.sync || problemSync.value;
+        showToast(`题库同步已开始（${problemsPlatform.value}）`, "info");
+      } catch (e) {
+        showToast("启动同步失败: " + e.message, "error");
+      }
+    };
+
+    // 关键词输入防抖后检索；难度/标签/解决状态变化立即检索
+    let problemsKeywordTimer = null;
+    watch(problemsKeyword, () => {
+      clearTimeout(problemsKeywordTimer);
+      problemsKeywordTimer = setTimeout(() => {
+        problemsPage.value = 1;
+        loadProblems();
+      }, 400);
+    });
+    watch([problemsDifficulty, problemsTag, problemsSolved], () => {
+      problemsPage.value = 1;
+      loadProblems();
+    });
+
+    // 同步进行中每 1.5 秒轮询：loadProblems 顺带带回进度和已入库的数据
+    let problemsSyncTimer = null;
+    watch(() => problemSync.value.running, (running, prev) => {
+      if (running && !prev) {
+        problemsSyncTimer = setInterval(() => { loadProblems(); }, 1500);
+      } else if (!running && prev) {
+        clearInterval(problemsSyncTimer);
+        loadProblems();
+      }
+    });
 
     const changeProblemsPage = (delta) => {
       problemsPage.value = Math.min(totalProblemPages.value, Math.max(1, problemsPage.value + delta));
@@ -1644,6 +1730,18 @@ const app = createApp({
       changeProblemsPlatform,
       changeProblemsLimit,
       changeProblemsPage,
+      problemsKeyword,
+      problemsDifficulty,
+      problemsTag,
+      problemsSolved,
+      problemsFacets,
+      problemSync,
+      problemDifficultyOptions,
+      problemTagOptions,
+      problemSolvedOptions,
+      hasProblemsFilters,
+      resetProblemsFilters,
+      syncProblems,
       // Contests exports
       contests,
       contestFilter,

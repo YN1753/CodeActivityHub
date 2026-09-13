@@ -267,6 +267,39 @@ func (c *Client) SyncSubmissions(ctx context.Context, cfg Config) (SyncResult, e
 	}
 }
 
+// AllProblems 全量枚举平台题库。Codeforces/AtCoder 上游一次给全量（内存缓存后按页切），
+// LeetCode/洛谷是真分页；洛谷固定 50 条/页且单页最多返回 50 条，所以统一按
+// 50 条一页拉，直到凑满 total、某页为空或某页不满。每拉到一页就回调 onBatch，
+// 调用方可以边拉边落库，长同步（洛谷约 350 页）中途失败也不全损。
+func (c *Client) AllProblems(ctx context.Context, platform string, onBatch func(rows []Problem, done, total int)) error {
+	const pageSize = 50
+	done := 0
+	total := 0
+	for page := 1; page <= 2000; page++ {
+		rows, t, err := c.Problems(ctx, platform, page, pageSize)
+		if err != nil {
+			return err
+		}
+		if page == 1 {
+			total = t
+		}
+		if len(rows) == 0 {
+			break
+		}
+		done += len(rows)
+		if onBatch != nil {
+			onBatch(rows, done, total)
+		}
+		if total > 0 && done >= total {
+			break
+		}
+		if len(rows) < pageSize {
+			break
+		}
+	}
+	return nil
+}
+
 func (c *Client) Problems(ctx context.Context, platform string, page, limit int) ([]Problem, int, error) {
 	if page < 1 {
 		page = 1

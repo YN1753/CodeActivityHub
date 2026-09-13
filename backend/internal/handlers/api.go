@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -26,6 +27,12 @@ import (
 type API struct {
 	DB        *gorm.DB
 	Platforms *platforms.Client
+
+	// ProblemSync 题库全量同步的内存进度；main.go 字面量构造时为零值，
+	// 由 problems.go 的 syncMgr() 惰性初始化。
+	ProblemSync *problemSyncManager
+
+	problemSyncOnce sync.Once
 }
 
 type authRequest struct {
@@ -103,6 +110,7 @@ func (a *API) RegisterRoutes(r *gin.Engine) {
 	auth.GET("/ingest/events", a.IngestEvents)
 	auth.GET("/contests", a.Contests)
 	auth.GET("/problems", a.Problems)
+	auth.POST("/problems/sync", a.ProblemsSync)
 	auth.POST("/contests/sync", a.ContestsSync)
 	auth.POST("/verify", a.Verify)
 	auth.GET("/accounts", a.ListAccounts)
@@ -1061,20 +1069,6 @@ func (a *API) ContestsSync(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"success": true, "platform": platform, "synced": len(rows), "message": fmt.Sprintf("已获取 %d 场比赛", len(rows)), "synced_at": nowUTC()})
-}
-
-func (a *API) Problems(c *gin.Context) {
-	platform := strings.ToLower(strings.TrimSpace(c.DefaultQuery("platform", "codeforces")))
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "30"))
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-	defer cancel()
-	rows, total, err := a.platformClient().Problems(ctx, platform, page, limit)
-	if err != nil {
-		jsonError(c, 502, err.Error())
-		return
-	}
-	c.JSON(200, gin.H{"platform": platform, "page": page, "limit": limit, "total": total, "problems": rows})
 }
 
 // ---------------------------------------------------------------------------

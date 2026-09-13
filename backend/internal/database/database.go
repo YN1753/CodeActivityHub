@@ -21,6 +21,7 @@ func Open(path string) (*gorm.DB, error) {
 		&models.User{}, &models.Session{}, &models.UserConfig{},
 		&models.PlatformStatus{}, &models.Submission{}, &models.IngestEvent{},
 		&models.PlatformAccount{}, &models.IngestToken{}, &models.IngestToken{},
+		&models.Problem{}, &models.ProblemTag{},
 	); err != nil {
 		return nil, err
 	}

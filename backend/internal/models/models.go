@@ -122,3 +122,24 @@ type IngestEvent struct {
 	Source       string `json:"source"`
 	ReceivedAt   string `json:"received_at"`
 }
+
+// Problem 是平台公开题库的本地缓存行，(platform, problem_id) 为自然键。
+// 题库由用户手动触发全量同步写入，检索/筛选/翻页全部落在本地 SQLite 上，
+// 浏览不再实时打平台公开接口。
+type Problem struct {
+	Platform   string `gorm:"primaryKey;size:32" json:"platform"`
+	ProblemID  string `gorm:"primaryKey;size:128;column:problem_id" json:"problem_id"`
+	Title      string `gorm:"size:300" json:"title"`
+	URL        string `gorm:"size:500" json:"url"`
+	Difficulty string `gorm:"size:64" json:"difficulty"`
+	Rating     int    `json:"rating"`
+	Tags       string `gorm:"size:1000" json:"tags"` // JSON 字符串数组
+	UpdatedAt  string `gorm:"size:40" json:"updated_at"`
+}
+
+// ProblemTag 把标签拆成行，标签筛选与标签聚合（facet）才能走索引。
+type ProblemTag struct {
+	Platform  string `gorm:"primaryKey;size:32" json:"platform"`
+	ProblemID string `gorm:"primaryKey;size:128;column:problem_id" json:"problem_id"`
+	Tag       string `gorm:"primaryKey;size:64;index" json:"tag"`
+}

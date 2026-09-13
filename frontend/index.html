@@ -352,18 +352,39 @@
 
         <!-- ============ 题库 ============ -->
         <div v-show="currentTab === 'problems'" class="space-y-4">
-          <!-- 工具栏：平台切换与刷新 -->
-          <div class="ui-card p-4 flex flex-wrap items-center gap-2">
-            <ui-select :model-value="problemsPlatform"
-                       :options="problemPlatformOptions"
-                       @update:model-value="changeProblemsPlatform"></ui-select>
-            <button @click="loadProblems" :disabled="isLoadingProblems" class="btn-secondary flex items-center gap-1.5">
-              <svg :class="['w-3.5 h-3.5', isLoadingProblems ? 'animate-spin' : '']" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-              </svg>
-              {{ isLoadingProblems ? '加载中…' : '刷新题库' }}
-            </button>
-            <span class="ml-auto ui-hint">数据实时读取平台公开接口</span>
+          <!-- 工具栏：平台、检索、筛选、同步 -->
+          <div class="ui-card p-4 space-y-3">
+            <div class="flex flex-wrap items-center gap-2">
+              <ui-select :model-value="problemsPlatform"
+                         :options="problemPlatformOptions"
+                         @update:model-value="changeProblemsPlatform"></ui-select>
+              <div class="relative flex-1 min-w-[200px]">
+                <svg class="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"></path>
+                </svg>
+                <input v-model="problemsKeyword" type="text" placeholder="搜索题号 / 题目标题…" class="ui-input w-full pl-8 text-xs py-1">
+              </div>
+              <button @click="resetProblemsFilters" class="flex items-center gap-1 text-xs text-slate-400 hover:text-blue-600 shrink-0 transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"></path>
+                </svg>
+                重置
+              </button>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <ui-select v-model="problemsDifficulty" dense :options="problemDifficultyOptions"></ui-select>
+              <ui-select v-model="problemsTag" dense :options="problemTagOptions"></ui-select>
+              <ui-select v-model="problemsSolved" dense :options="problemSolvedOptions"></ui-select>
+              <span class="ml-auto text-[11px] font-mono text-slate-400">
+                已解决 {{ problemsFacets.solved || 0 }} · 更新于 {{ problemsFacets.updated_at ? formatTimeAgo(problemsFacets.updated_at) : '从未' }}
+              </span>
+              <button @click="syncProblems" :disabled="problemSync.running" class="btn-secondary text-xs py-1 flex items-center gap-1.5">
+                <svg :class="['w-3.5 h-3.5', problemSync.running ? 'animate-spin' : '']" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                </svg>
+                {{ problemSync.running ? `同步中 ${problemSync.items}/${problemSync.total || '…'}` : '同步题库' }}
+              </button>
+            </div>
           </div>
 
           <!-- 题目列表 -->
@@ -378,13 +399,22 @@
               </div>
             </div>
 
-            <div v-if="isLoadingProblems" class="py-14">
+            <div v-if="isLoadingProblems && problems.length === 0" class="py-14">
               <div class="flex flex-col items-center gap-2 text-slate-400">
                 <svg class="w-6 h-6 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                <span class="text-sm">正在读取公开题库…</span>
+                <span class="text-sm">正在读取题库…</span>
+              </div>
+            </div>
+            <div v-else-if="problems.length === 0 && problemSync.running" class="py-14">
+              <div class="flex flex-col items-center gap-1.5 text-center">
+                <svg class="w-8 h-8 text-slate-200 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"></path>
+                </svg>
+                <div class="text-sm text-slate-400">正在从平台拉取题库（{{ problemSync.items }} / {{ problemSync.total || '?' }} 条）…</div>
+                <div class="text-xs text-slate-400">数据边拉边入库，已拉取的部分马上就能搜到</div>
               </div>
             </div>
             <div v-else-if="problems.length === 0" class="py-14">
@@ -392,8 +422,8 @@
                 <svg class="w-8 h-8 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"></path>
                 </svg>
-                <div class="text-sm text-slate-400">暂无题目或该平台接口不可用</div>
-                <div class="text-xs text-slate-400">试试切换平台，或点击「刷新题库」重试</div>
+                <div class="text-sm text-slate-400">{{ hasProblemsFilters ? '没有符合筛选条件的题目' : '本地题库还是空的' }}</div>
+                <div class="text-xs text-slate-400">{{ hasProblemsFilters ? '试试放宽关键词 / 难度 / 标签，或点「重置」' : '点击右上角「同步题库」拉取该平台全量数据，之后检索都在本地完成' }}</div>
               </div>
             </div>
             <div v-else class="overflow-x-auto">
@@ -402,7 +432,14 @@
                 <tbody>
                   <tr v-for="p in problems" :key="p.platform + p.id">
                     <td class="font-mono text-blue-600">{{ p.id }}</td>
-                    <td><a :href="p.url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">{{ p.title }}</a></td>
+                    <td>
+                      <div class="flex items-center gap-1.5">
+                        <a :href="p.url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">{{ p.title }}</a>
+                        <svg v-if="p.solved" class="w-4 h-4 text-emerald-600 shrink-0" title="已解决" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                      </div>
+                    </td>
                     <td class="text-xs" :class="difficultyClass(p.difficulty || p.rating)">{{ p.difficulty || (p.rating ? p.rating : '-') }}</td>
                     <td>
                       <div class="flex flex-wrap gap-1">
