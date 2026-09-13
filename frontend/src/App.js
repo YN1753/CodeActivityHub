@@ -1262,9 +1262,40 @@ const app = createApp({
       const startDateStr = `${targetYear}-01-01`;
       const endDateStr = `${targetYear}-12-31`;
 
-      const heatMapData = (rawHeatmap.value || [])
-        .filter(item => item.date && item.date.startsWith(`${targetYear}`))
-        .map(item => [item.date, item.count]);
+      // 补全全年每一天：没有提交的日子也要占一个 0 值格子，
+      // 这样空天由 visualMap 统一配色，tooltip 能显示"没有提交"。
+      const countByDate = {};
+      (rawHeatmap.value || []).forEach(item => {
+        if (item.date && item.date.startsWith(String(targetYear))) {
+          countByDate[item.date] = item.count;
+        }
+      });
+      const heatMapData = [];
+      const cursor = new Date(targetYear, 0, 1);
+      const endDate = new Date(targetYear, 11, 31);
+      const pad = (n) => String(n).padStart(2, "0");
+      while (cursor <= endDate) {
+        const ds = `${cursor.getFullYear()}-${pad(cursor.getMonth() + 1)}-${pad(cursor.getDate())}`;
+        heatMapData.push([ds, countByDate[ds] || 0]);
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      // 方形格子随容器宽度自适应。两个坑（canvas 实测得出）：
+      // 1. calendar 同时给 left 和 right 时，ECharts 会用盒子宽度拉伸格子、无视
+      //    显式 cellSize —— 所以这里只给 left，right 必须留空；
+      // 2. 描边画在格子内部，步进就是 cellSize 本身，不需要做描边补偿。
+      // 星期标签渲染在网格左侧约 18px（canvas 实测），居中时把它折进去使整体对称。
+      // 用 echarts 自己的 getWidth/getHeight，避免容器尺寸读取时机问题。
+      const dayLabelOverhang = 18;
+      const chartW = chart.getWidth() || chartDom.clientWidth || 800;
+      const chartH = chart.getHeight() || chartDom.clientHeight || 160;
+      const jan1 = new Date(targetYear, 0, 1);
+      const leap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
+      const daysInYear = leap ? 366 : 365;
+      const cols = Math.ceil((((jan1.getDay() + 6) % 7) + daysInYear) / 7);
+      const cell = Math.max(13, Math.min(18,
+        Math.floor((chartW - 34) / cols), Math.floor((chartH - 34) / 7)));
+      const calendarLeft = Math.max(dayLabelOverhang + 8, Math.floor((chartW - cols * cell - dayLabelOverhang) / 2) + dayLabelOverhang);
 
       const option = {
         tooltip: {
@@ -1282,31 +1313,41 @@ const app = createApp({
           },
           extraCssText: "border-radius: 8px; box-shadow: 0 4px 16px rgba(16, 24, 40, 0.12); z-index: 99999;",
           formatter: function (p) {
-            return `<div class="font-mono text-xs font-semibold text-slate-900">${p.value[0]}</div><div class="text-xs text-blue-600 font-mono mt-1 font-bold">${p.value[1]} Submissions</div>`;
+            const d = new Date(p.value[0] + "T00:00:00");
+            const week = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()];
+            const n = p.value[1];
+            const line2 = n > 0
+              ? `<span class="text-blue-600 font-bold">${n} 次提交</span>`
+              : `<span class="text-slate-400">没有提交</span>`;
+            return `<div class="font-mono text-xs font-semibold text-slate-900">${p.value[0]} ${week}</div><div class="text-xs font-mono mt-1">${line2}</div>`;
           }
         },
+        // 阶梯式分档比线性映射更接近 GitHub 的观感：低活跃有区分度，
+        // 高活跃不会早早"顶格"成一种颜色
         visualMap: {
           show: false,
-          min: 1,
-          max: 10,
-          inRange: {
-            color: ["#dbeafe", "#93c5fd", "#3b82f6", "#1d4ed8"]
-          },
+          type: "piecewise",
+          pieces: [
+            { min: 1, max: 1, color: "#bfdbfe" },
+            { min: 2, max: 3, color: "#93c5fd" },
+            { min: 4, max: 6, color: "#60a5fa" },
+            { min: 7, max: 9, color: "#3b82f6" },
+            { min: 10, color: "#2563eb" }
+          ],
           outOfRange: {
             color: "#eef2f7"
           }
         },
         calendar: {
-          top: 26,
-          left: 35,
-          right: 15,
-          cellSize: [13, 13],
+          top: 24,
+          left: calendarLeft,
+          cellSize: [cell, cell],
           range: [startDateStr, endDateStr],
           itemStyle: {
-            color: "#ffffff",
-            borderColor: "#e5e7eb",
-            borderWidth: 1.5,
-            borderRadius: 2
+            color: "#eef2f7",
+            borderColor: "#ffffff",
+            borderWidth: 2,
+            borderRadius: 3
           },
           splitLine: { show: false },
           yearLabel: { show: false },
@@ -1320,13 +1361,22 @@ const app = createApp({
           monthLabel: {
             color: "#6b7280",
             fontSize: 11,
-            fontFamily: "JetBrains Mono"
+            fontFamily: "JetBrains Mono",
+            margin: 6
           }
         },
         series: [{
           type: "heatmap",
           coordinateSystem: "calendar",
-          data: heatMapData
+          data: heatMapData,
+          emphasis: {
+            itemStyle: {
+              borderColor: "#2563eb",
+              borderWidth: 1.5,
+              shadowBlur: 6,
+              shadowColor: "rgba(37, 99, 235, 0.35)"
+            }
+          }
         }]
       };
 
@@ -1590,6 +1640,7 @@ const app = createApp({
           heatmapChart && heatmapChart.resize();
           tagBarChart && tagBarChart.resize();
           platformPieChart && platformPieChart.resize();
+          renderHeatmap(); // 格子尺寸按容器宽度计算，resize 后需要重算
         }
       });
 
