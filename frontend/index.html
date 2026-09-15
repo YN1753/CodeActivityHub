@@ -672,7 +672,15 @@
                     <span class="w-2 h-2 rounded-full" :class="meta.dot"></span>
                     <span class="text-sm font-semibold">{{ meta.label }}</span>
                   </div>
-                  <span class="ui-hint">{{ accountsFor(key).length }} 个账号</span>
+                  <div class="flex items-center gap-2">
+                    <span class="ui-hint">{{ accountsFor(key).length }} 个账号</span>
+                    <button @click="syncPlatformRecords(key)"
+                            :disabled="syncingPlatform[key] || accountsFor(key).length === 0 || meta.canSync === false"
+                            :title="meta.canSync === false ? meta.label + ' 没有公开的历史记录接口，提交记录请用浏览器脚本接入' : '从 ' + meta.label + ' 拉取历史提交记录（浏览器脚本只负责实时推送）'"
+                            class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed">
+                      {{ syncingPlatform[key] ? '同步中…' : '同步记录' }}
+                    </button>
+                  </div>
                 </div>
 
                 <div class="space-y-1.5">

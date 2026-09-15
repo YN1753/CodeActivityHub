@@ -228,16 +228,19 @@ const app = createApp({
     const freshTokenName = ref("");
 
     // --- 平台多账号：同一平台可保存多个，单选启用 ---
+    // canSync：服务端能否拉取该平台的历史提交记录（AcWing 无公开接口，只能靠浏览器脚本）
     const platformMeta = {
-      codeforces: { label: "Codeforces", dot: "bg-blue-500", handleLabel: "用户名 (Handle)", handlePlaceholder: "输入 CF 用户名 (如 MCGA_WJJ)", cookie: false, authText: "公开 API 免 Cookie" },
-      leetcode: { label: "LeetCode", dot: "bg-amber-500", handleLabel: "用户名 (Username)", handlePlaceholder: "输入 LeetCode 用户名", cookie: false, authText: "公开 GraphQL 免 Cookie" },
-      atcoder: { label: "AtCoder", dot: "bg-purple-500", handleLabel: "用户名 (Handle)", handlePlaceholder: "输入 AtCoder 用户名 (如 FarmingWAs)", cookie: false, authText: "公开 API 免 Cookie" },
-      luogu: { label: "洛谷", dot: "bg-sky-500", handleLabel: "UID (纯数字)", handlePlaceholder: "输入 UID 纯数字 (如 1940760)", cookie: true, cookieLabel: "Cookie（__client_id 值，或整段 cookie）", cookiePlaceholder: "F12 → Network → 复制整段 cookie", authText: "UID 用公开主页校验；同步历史需要 __client_id + _uid（UID 会自动补上）" },
-      acwing: { label: "AcWing", dot: "bg-indigo-500", handleLabel: "空间 ID (纯数字)", handlePlaceholder: "输入空间 ID 纯数字 (如 360946)", cookie: true, cookieLabel: "Cookie (sessionid)", cookiePlaceholder: "输入 sessionid 字符串", authText: "接口暂未适配，仅浏览器脚本实时接入" }
+      codeforces: { label: "Codeforces", dot: "bg-blue-500", handleLabel: "用户名 (Handle)", handlePlaceholder: "输入 CF 用户名 (如 MCGA_WJJ)", cookie: false, canSync: true, authText: "公开 API 免 Cookie" },
+      leetcode: { label: "LeetCode", dot: "bg-amber-500", handleLabel: "用户名 (Username)", handlePlaceholder: "输入 LeetCode 用户名（/u/ 后面那段）", cookie: false, canSync: true, authText: "公开 GraphQL 免 Cookie；力扣中国站（leetcode.cn）同样支持验证与题库同步" },
+      atcoder: { label: "AtCoder", dot: "bg-purple-500", handleLabel: "用户名 (Handle)", handlePlaceholder: "输入 AtCoder 用户名 (如 FarmingWAs)", cookie: false, canSync: true, authText: "公开 API 免 Cookie" },
+      luogu: { label: "洛谷", dot: "bg-sky-500", handleLabel: "UID (纯数字)", handlePlaceholder: "输入 UID 纯数字 (如 1940760)", cookie: true, cookieLabel: "Cookie（__client_id 值，或整段 cookie）", cookiePlaceholder: "F12 → Network → 复制整段 cookie", canSync: true, authText: "UID 用公开主页校验；同步历史需要 __client_id + _uid（UID 会自动补上）" },
+      acwing: { label: "AcWing", dot: "bg-indigo-500", handleLabel: "空间 ID (纯数字)", handlePlaceholder: "输入空间 ID 纯数字 (如 360946)", cookie: true, cookieLabel: "Cookie (sessionid)", cookiePlaceholder: "输入 sessionid 字符串", canSync: false, authText: "接口暂未适配，仅浏览器脚本实时接入" }
     };
     const accounts = ref([]);
     const isLoadingAccounts = ref(false);
     const isVerifyingAccount = ref({});
+    // 每个平台"同步记录"按钮的进行态：浏览器脚本只负责实时推送，历史记录按平台手动补
+    const syncingPlatform = ref({});
     const accountForms = ref(Object.fromEntries(
       Object.keys(platformMeta).map(key => [key, { name: "", handle: "", cookie: "" }])
     ));
@@ -1369,6 +1372,19 @@ const app = createApp({
       }
     };
 
+    // 单独同步某个平台的历史提交记录（服务端抓取）。
+    // 复用 syncNow（内部已处理 toast、刷新数据与重绘图表），这里只维护该平台按钮的进行态，
+    // 避免用全局 isSyncing 让所有平台的按钮一起变成"同步中"。
+    const syncPlatformRecords = async (platform) => {
+      if (syncingPlatform.value[platform]) return;
+      syncingPlatform.value[platform] = true;
+      try {
+        await syncNow(platform);
+      } finally {
+        syncingPlatform.value[platform] = false;
+      }
+    };
+
     const selectAccount = async (id) => {
       try {
         const res = await apiFetch(`/api/accounts/${id}/select`, { method: "POST" });
@@ -1930,6 +1946,8 @@ const app = createApp({
       accountForms,
       isLoadingAccounts,
       isVerifyingAccount,
+      syncingPlatform,
+      syncPlatformRecords,
       addAccount,
       verifyAccount,
       selectAccount,

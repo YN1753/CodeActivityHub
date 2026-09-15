@@ -857,10 +857,10 @@ func (a *API) ManualSync(c *gin.Context) {
 		jsonError(c, 400, "请先在设置中配置至少一个平台账号")
 		return
 	}
-	// 只配置了洛谷/AcWing 时不能报"同步完成"：这两个平台没有历史接口，
-	// 用户会以为真的同步过了。
+	// 只配置了 AcWing 时不能报"同步完成"：它没有公开的历史接口，
+	// 用户会以为真的同步过了。（洛谷已支持：走页面内嵌的 lentille 数据）
 	if failed == 0 && attempted == 0 {
-		jsonError(c, 400, "尚未配置支持历史同步的平台（Codeforces / LeetCode / AtCoder）；洛谷与 AcWing 请使用浏览器脚本实时接入")
+		jsonError(c, 400, "尚未配置支持历史同步的平台（洛谷 / Codeforces / LeetCode / AtCoder）；AcWing 请使用浏览器脚本实时接入")
 		return
 	}
 	c.JSON(200, gin.H{"success": failed == 0, "data": gin.H{"mode": "manual", "platform": requested, "synced": total, "results": results, "synced_at": nowUTC(), "message": fmt.Sprintf("手动同步完成，写入 %d 条提交记录", total)}})
