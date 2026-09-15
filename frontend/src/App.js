@@ -1701,10 +1701,15 @@ const app = createApp({
         if (data.data?.synced_at) {
           overview.value.last_sync_time = data.data.synced_at;
         }
+        // 单平台同步时优先展示该平台自己的说明（例如"中国站不提供公开提交列表"），
+        // 而不是笼统的"写入 0 条"——否则用户会以为同步坏了。
+        const results = data.data?.results || [];
+        const only = results.length === 1 ? results[0] : null;
+        const detailMsg = only ? `${only.message || ""}${only.synced ? `（新增 ${only.synced} 条）` : ""}` : "";
         if (data.success) {
-          showToast(data.data?.message || "公开数据手动同步完成；提交后的新记录由浏览器脚本实时接入。", "success");
+          showToast(detailMsg || data.data?.message || "公开数据手动同步完成；提交后的新记录由浏览器脚本实时接入。", "success");
         } else {
-          showToast(data.detail || data.message || "部分平台同步未成功，请检查状态", "error");
+          showToast((only && only.message) || data.detail || data.message || "部分平台同步未成功，请检查状态", "error");
         }
         await reloadAllData();
       } catch (e) {

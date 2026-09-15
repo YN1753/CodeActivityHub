@@ -694,8 +694,27 @@ func (c *Client) verifyLeetCode(ctx context.Context, username string) (Profile, 
 		} `json:"userProfilePublicProfile"`
 	}
 	if err := c.postGraphQL(ctx, "https://leetcode.cn/graphql/", cnQ, map[string]any{"userSlug": username}, &cn); err == nil && cn.Profile.Username != "" {
+		// 顺带取已解决题数（中国站有公开的聚合统计接口），让设置页/看板显示有意义的数据。
+		// 注意：中国站没有公开的"提交列表"接口（profile 的提交动态默认不公开），
+		// 所以逐条记录只能靠浏览器脚本在提交时抓。
+		const cnStatsQ = `query($userSlug:String!){ userProfileUserQuestionSubmitStats(userSlug:$userSlug){ acSubmissionNum{ difficulty count } } }`
+		var stats struct {
+			Stats struct {
+				AC []struct {
+					Difficulty string `json:"difficulty"`
+					Count      int    `json:"count"`
+				} `json:"acSubmissionNum"`
+			} `json:"userProfileUserQuestionSubmitStats"`
+		}
+		solved := 0
+		if err := c.postGraphQL(ctx, "https://leetcode.cn/graphql/", cnStatsQ, map[string]any{"userSlug": username}, &stats); err == nil {
+			for _, x := range stats.Stats.AC {
+				solved += x.Count
+			}
+		}
 		return Profile{Platform: "leetcode", Handle: cn.Profile.Username,
-			Rating: strconv.Itoa(cn.Profile.SiteRanking), Note: "力扣中国站（leetcode.cn）"}, nil
+			Rating: strconv.Itoa(cn.Profile.SiteRanking), Solved: solved,
+			Note: "力扣中国站（leetcode.cn）：该站不提供公开的提交列表，逐条记录请用浏览器脚本接入"}, nil
 	}
 
 	return Profile{}, fmt.Errorf("LeetCode 用户不存在：请填个人主页 URL 里 /u/ 后面那段用户名（英文/数字），不要填昵称。" +
