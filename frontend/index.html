@@ -733,27 +733,45 @@
                   <div v-for="acc in accountsFor(key)" :key="acc.id"
                        :class="['p-2.5 rounded-lg border text-xs space-y-1',
                                 acc.selected ? 'bg-blue-50/60 border-blue-200' : 'bg-slate-50 border-slate-200']">
-                    <div class="flex items-center justify-between gap-2">
-                      <label class="flex items-center gap-2 cursor-pointer min-w-0">
-                        <input type="radio" :name="'account-' + key" :checked="acc.selected" @change="selectAccount(acc.id)" class="accent-blue-600">
-                        <span class="truncate font-medium" :class="acc.selected ? 'text-blue-700' : 'text-slate-700'">{{ acc.name }}</span>
-                      </label>
-                      <div class="flex items-center gap-1 shrink-0">
-                        <button @click="verifyAccount(acc.id)" :disabled="isVerifyingAccount[acc.id]"
-                                class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100 disabled:opacity-50">
-                          {{ isVerifyingAccount[acc.id] ? '验证中' : '验证' }}
-                        </button>
-                        <button @click="deleteAccount(acc.id)"
-                                class="px-2 py-0.5 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100">删除</button>
+                    <!-- 编辑态：就地改备注名 / 用户名 / Cookie -->
+                    <template v-if="editingAccountId === acc.id">
+                      <input v-model="editAccountForm.name" type="text" placeholder="备注名（可选）" class="ui-input text-xs py-1">
+                      <input v-model="editAccountForm.handle" type="text" :placeholder="meta.handlePlaceholder" class="ui-input font-mono text-xs py-1">
+                      <input v-if="meta.cookie" v-model="editAccountForm.cookie" type="text" :placeholder="meta.cookiePlaceholder" class="ui-input font-mono text-xs py-1">
+                      <div v-if="meta.cookie" class="text-[11px] text-slate-400">Cookie 留空＝保持原值</div>
+                      <div class="flex flex-wrap gap-2 pt-0.5">
+                        <button @click="saveEditAccount(acc, true)" class="btn-primary py-1 px-2 text-[11px]">保存并验证</button>
+                        <button @click="saveEditAccount(acc, false)" class="btn-secondary py-1 px-2 text-[11px]">仅保存</button>
+                        <button @click="cancelEditAccount" class="px-2 py-1 rounded text-[11px] border border-slate-200 hover:bg-slate-100">取消</button>
                       </div>
-                    </div>
-                    <div class="flex items-center justify-between gap-2 font-mono text-[11px] text-slate-400">
-                      <span class="truncate">{{ acc.handle }}</span>
-                      <span>{{ acc.cookie_hint }}</span>
-                    </div>
-                    <div v-if="acc.message" class="text-[11px] truncate"
-                         :class="acc.status === 'ok' ? 'text-emerald-700' : acc.status === 'error' ? 'text-rose-700' : 'text-slate-400'"
-                         :title="acc.message">{{ acc.selected ? '● 启用中 · ' : '' }}{{ acc.message }}</div>
+                    </template>
+
+                    <!-- 展示态 -->
+                    <template v-else>
+                      <div class="flex items-center justify-between gap-2">
+                        <label class="flex items-center gap-2 cursor-pointer min-w-0">
+                          <input type="radio" :name="'account-' + key" :checked="acc.selected" @change="selectAccount(acc.id)" class="accent-blue-600">
+                          <span class="truncate font-medium" :class="acc.selected ? 'text-blue-700' : 'text-slate-700'">{{ acc.name }}</span>
+                        </label>
+                        <div class="flex items-center gap-1 shrink-0">
+                          <button @click="startEditAccount(acc)"
+                                  class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100">编辑</button>
+                          <button @click="verifyAccount(acc.id)" :disabled="isVerifyingAccount[acc.id]"
+                                  class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100 disabled:opacity-50">
+                            {{ isVerifyingAccount[acc.id] ? '验证中' : '验证' }}
+                          </button>
+                          <button @click="deleteAccount(acc.id)"
+                                  class="px-2 py-0.5 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100">删除</button>
+                        </div>
+                      </div>
+                      <div class="flex items-center justify-between gap-2 font-mono text-[11px] text-slate-400">
+                        <span class="truncate">{{ acc.handle }}</span>
+                        <span>{{ acc.cookie_hint }}</span>
+                      </div>
+                      <div v-if="acc.message" class="text-[11px] truncate"
+                           :class="acc.status === 'ok' ? 'text-emerald-700' : acc.status === 'error' ? 'text-rose-700' : 'text-slate-400'"
+                           :title="acc.message">{{ acc.selected ? '● 启用中 · ' : '' }}{{ acc.message }}</div>
+                    </template>
                   </div>
                   <div v-if="accountsFor(key).length === 0" class="text-xs text-slate-400">尚未保存账号</div>
                 </div>

@@ -242,6 +242,9 @@ const app = createApp({
     const isVerifyingAccount = ref({});
     // 每个平台"同步记录"按钮的进行态：浏览器脚本只负责实时推送，历史记录按平台手动补
     const syncingPlatform = ref({});
+    // 账号编辑态：同一时间只展开一条，避免多张卡片同时进入编辑
+    const editingAccountId = ref(null);
+    const editAccountForm = ref({ name: "", handle: "", cookie: "" });
     const accountForms = ref(Object.fromEntries(
       Object.keys(platformMeta).map(key => [key, { name: "", handle: "", cookie: "" }])
     ));
@@ -1386,6 +1389,38 @@ const app = createApp({
       }
     };
 
+    // --- 账号编辑 ---
+    // Cookie 不回显（库里只给 has_cookie / cookie_hint），所以编辑框留空＝保持原值，
+    // 想换就直接粘新的整段 cookie。
+    const startEditAccount = (acc) => {
+      editingAccountId.value = acc.id;
+      editAccountForm.value = { name: acc.name || "", handle: acc.handle || "", cookie: "" };
+    };
+    const cancelEditAccount = () => {
+      editingAccountId.value = null;
+      editAccountForm.value = { name: "", handle: "", cookie: "" };
+    };
+    const saveEditAccount = async (acc, verify) => {
+      try {
+        const res = await apiFetch(`/api/accounts/${acc.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: editAccountForm.value.name,
+            handle: editAccountForm.value.handle,
+            cookie: editAccountForm.value.cookie,
+            verify: !!verify
+          })
+        });
+        const data = await res.json();
+        showToast(data.message || "账号已更新", "success");
+        cancelEditAccount();
+        await Promise.all([loadAccounts(), loadOverview()]);
+      } catch (e) {
+        showToast("保存失败: " + e.message, "error");
+      }
+    };
+
     const selectAccount = async (id) => {
       try {
         const res = await apiFetch(`/api/accounts/${id}/select`, { method: "POST" });
@@ -1954,6 +1989,11 @@ const app = createApp({
       isVerifyingAccount,
       syncingPlatform,
       syncPlatformRecords,
+      editingAccountId,
+      editAccountForm,
+      startEditAccount,
+      cancelEditAccount,
+      saveEditAccount,
       addAccount,
       verifyAccount,
       selectAccount,

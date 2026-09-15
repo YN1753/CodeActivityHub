@@ -151,6 +151,7 @@ func (a *API) RegisterRoutes(r *gin.Engine) {
 	auth.POST("/accounts/:id/verify", a.VerifyAccount)
 	auth.POST("/accounts/:id/select", a.SelectAccount)
 	auth.DELETE("/accounts/:id", a.DeleteAccount)
+	auth.PUT("/accounts/:id", a.UpdateAccount)
 }
 
 func userID(c *gin.Context) uint {
@@ -933,6 +934,65 @@ var platformMeta = map[string]struct {
 	"acwing":     {"acwing_user_id", "acwing_cookie", "AcWing"},
 }
 
+// UpdateAccount 编辑已保存账号的备注名 / 用户名 / Cookie。
+// 改完把账号标回"未验证"（凭证可能已不同）；如果它正是启用中的账号，
+// 还要回写 user_configs —— 历史同步读的是启用账号那一条，不回写等于没改。
+// Cookie 留空表示"保持原值"：明文不回显，前端没法预填，只能重填或不动。
+func (a *API) UpdateAccount(c *gin.Context) {
+	acc, ok := a.loadAccount(c)
+	if !ok {
+		return
+	}
+	var req accountRequest
+	if c.ShouldBindJSON(&req) != nil {
+		jsonError(c, 400, "请求格式错误")
+		return
+	}
+	handle := strings.TrimSpace(req.Handle)
+	if handle == "" {
+		jsonError(c, 400, "账号不能为空")
+		return
+	}
+	if len(req.Cookie) > 1024 {
+		jsonError(c, 400, "Cookie 过长")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = handle
+	}
+	updates := map[string]any{
+		"name":     truncate(name, 64),
+		"handle":   truncate(handle, 255),
+		"status":   "unverified",
+		"message":  "尚未验证",
+		"verified": false,
+	}
+	if cookie := strings.TrimSpace(req.Cookie); cookie != "" {
+		updates["cookie"] = cookie
+	}
+	if err := a.DB.Model(acc).Updates(updates).Error; err != nil {
+		jsonError(c, 500, "账号更新失败")
+		return
+	}
+	if err := a.DB.Where("id = ?", acc.ID).First(acc).Error; err != nil {
+		jsonError(c, 500, "账号更新失败")
+		return
+	}
+	if req.Select != nil && *req.Select && !acc.Selected {
+		a.DB.Model(&models.PlatformAccount{}).Where("user_id = ? AND platform = ?", acc.UserID, acc.Platform).Update("selected", false)
+		a.DB.Model(acc).Update("selected", true)
+		acc.Selected = true
+	}
+	if req.Verify {
+		a.verifyAccountRow(acc)
+	}
+	if acc.Selected {
+		a.applyAccountToConfig(acc.UserID, acc.Platform)
+	}
+	c.JSON(200, gin.H{"success": true, "message": "账号已更新", "account": accountResponse(*acc)})
+}
+
 func accountResponse(acc models.PlatformAccount) gin.H {
 	cookieHint := ""
 	if acc.Cookie != "" {
@@ -1388,7 +1448,12 @@ var verdictAliases = map[string]string{
 	"MEMORY_LIMIT_EXCEEDED": "MLE", "MEMORY_LIMIT": "MLE", "内存限制": "MLE",
 	"COMPILATION_ERROR": "CE", "COMPILE_ERROR": "CE", "编译错误": "CE",
 	"RUNTIME_ERROR": "RE", "运行错误": "RE",
-	"JUDGING": "PENDING", "QUEUE": "PENDING", "QUEUING": "PENDING", "IN_QUEUE": "PENDING",
+	// 带空格的写法（力扣 statusDisplay、Codeforces 状态文案）也要归一，
+	// 否则看板上会出现 "WRONG ANSWER" 这种既不算 AC 也不好看的判定。
+	"WRONG ANSWER": "WA", "TIME LIMIT EXCEEDED": "TLE", "MEMORY LIMIT EXCEEDED": "MLE",
+	"COMPILE ERROR": "CE", "RUNTIME ERROR": "RE", "OUTPUT LIMIT EXCEEDED": "OLE",
+	"IDLENESS LIMIT EXCEEDED": "ILE",
+	"JUDGING":                 "PENDING", "QUEUE": "PENDING", "QUEUING": "PENDING", "IN_QUEUE": "PENDING",
 	"WAITING": "PENDING", "TESTING": "PENDING", "PENDING": "PENDING",
 }
 
