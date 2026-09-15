@@ -732,7 +732,7 @@ func (c *Client) verifyLeetCode(ctx context.Context, username string) (Profile, 
 		}
 		return Profile{Platform: "leetcode", Handle: cn.Profile.Username,
 			Rating: strconv.Itoa(cn.Profile.SiteRanking), Solved: solved,
-			Note: "力扣中国站（leetcode.cn）：该站不提供公开的提交列表，逐条记录请用浏览器脚本接入"}, nil
+			Note: "力扣中国站（leetcode.cn）"}, nil
 	}
 
 	return Profile{}, fmt.Errorf("LeetCode 用户不存在：请填个人主页 URL 里 /u/ 后面那段用户名（英文/数字），不要填昵称。" +
