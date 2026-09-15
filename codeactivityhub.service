@@ -1,3 +1,12 @@
+# 安全说明（部署前请读）：
+# 本单元目前以 root 运行（User=root），仅为兼容现有部署、避免破坏已有环境。
+# 强烈建议改成专用低权限账号，降低被攻破后的影响面，例如：
+#   useradd -r -s /usr/sbin/nologin -d /opt/codeactivityhub cah
+#   chown -R cah:cah /opt/codeactivityhub
+# 然后把下方 User=root 改为 User=cah。
+# 该账号只需对数据目录有写权限：/opt/codeactivityhub/data（数据库写在此处），
+# 其余目录（可执行文件、frontend/dist）保持 root 只读即可。
+
 [Unit]
 Description=CodeActivityHub Web Application
 After=network.target
@@ -12,6 +21,15 @@ RestartSec=5
 Environment=CODEACTIVITYHUB_ADDR=:2053
 Environment=CODEACTIVITYHUB_DB=/opt/codeactivityhub/data/codeactivityhub.db
 Environment=CODEACTIVITYHUB_FRONTEND_DIST=/opt/codeactivityhub/frontend/dist
+
+# ---- 安全加固 ----
+# ProtectSystem=strict 会把整个文件系统设为只读，必须用 ReadWritePaths 放行可写目录，
+# 否则数据库写不进去（Error: database is locked / read-only）。
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/codeactivityhub/data
 
 [Install]
 WantedBy=multi-user.target

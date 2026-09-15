@@ -11,12 +11,33 @@
 2. 登录 CodeActivityHub，进入 **系统设置 → 浏览器事件同步**，点「**生成新 Token**」，
    给这台设备起个名字（如"家里的电脑"），**立即复制弹出的明文**。
    > 明文只在生成/轮换时显示这一次，库里只存哈希，之后无法回显。
-3. Tampermonkey 新建脚本，粘贴模板安装（默认地址 `http://127.0.0.1:2053`）。
+3. Tampermonkey 新建脚本，粘贴模板安装。所有可配置项都集中在脚本正文最上方的
+   **配置区**（见下表），本机开发的默认值不用改。
 4. **配置**：点 Tampermonkey 图标 → 本脚本 → 「设置 CodeActivityHub（Endpoint / Token）」，
    填入服务地址和上一步复制的 Token。配置存在脚本管理器里，不用改脚本文件；
    菜单里还有「查看待确认提交」。
-5. 公网部署时需在脚本头补一行 `@connect your-domain.example`。
-6. 在 OJ 提交一次即可。
+5. 在 OJ 提交一次即可。
+
+### 配置变量（脚本正文最上方）
+
+| 变量 | 默认值 | 含义 |
+|---|---|---|
+| `FILE_ENDPOINT` | `http://127.0.0.1:2053` | 后端入口地址。搬到服务器后改成 `https://你的域名`（结尾不带 `/`），并在文件头补一行 `@connect` 白名单（见下节） |
+| `FILE_TOKEN` | `''`（空） | 上报专用 Token（系统设置 → 浏览器事件同步生成）。建议留空走菜单填写，脚本可放心备份/分享；直接写死也可以，但写过后别分享脚本文件 |
+| `DEBUG` | `false` | 排错开关。排查问题或刚搬服务器验证链路时改 `true`，控制台打印 `[CodeActivityHub]` 每一步日志，确认后改回 |
+| `PENDING_TTL` | `15 * 60 * 1000` | 待确认记录过期时间（15 分钟），没等到判定就丢弃，一般不用改 |
+
+> **配置优先级**：Tampermonkey 菜单（GM_setValue）> 上述代码常量。菜单里保存过值的话，改常量不会生效，直接在菜单里改即可。
+
+### 搬到服务器（域名下来后三步）
+
+1. **脚本正文**：把顶部配置区的 `FILE_ENDPOINT` 改成 `https://你的域名`（结尾不带 `/`）；
+   并在文件头按注释补一行 `// @connect      你的域名` —— GM_xmlhttpRequest 只允许访问
+   白名单里的域名，不加的话首次上报会被 Tampermonkey 拦截或弹授权询问。
+2. **服务器**：在 Web 端重新生成一条新 Token（系统设置 → 浏览器事件同步）。Token 跟数据库走，
+   本机旧 Token 在服务器上无效，上报会 401，脚本会弹「Token 已失效」通知。
+3. **菜单**：在「设置 CodeActivityHub（Endpoint / Token）」里填服务器地址和新 Token ——
+   菜单优先级高于代码常量，只改常量不改菜单是不生效的。
 
 ### Token 管理
 
@@ -46,7 +67,7 @@
 /**
  * 待确认提交记录（暂存在页面会话，跨导航存活）
  * @typedef {Object} PendingSubmission
- * @property {string} id          幂等键 `site:problemId:提交分钟`，直接作为后端 raw_id
+ * @property {string} id          幂等键 `site:problemId:提交秒`（UTC 到秒精度），直接作为后端 raw_id
  * @property {string} site        codeforces | atcoder | luogu | leetcode
  * @property {string} problemId   平台内唯一题号（CF 的 1A、洛谷的 P1001、力扣的 slug）
  * @property {string} problemTitle
@@ -87,16 +108,31 @@
 
 ## 可靠性约定
 
-- **只认终态**：`In queue` / `Running` / `Judging` / `WJ` 等中间态一律不写入后端
-  （错题本规则是"非 AC 即错题"，写半截记录会污染数据）。
-- **宁可丢一条**：匹配不到判定就留在队列里等下一次刷新，超时（15 分钟）丢弃。
-- **不上传代码正文**：请求体按字段名精确脱敏后截断到 5000 字符，仅用于排错。
-- **幂等**：`raw_id` 由「平台 + 题号 + 提交分钟」生成，后端按
-  `(user_id, platform, raw_id)` 去重，重复触发不会产生重复记录。
+- **只认终态**：`In queue` / `Running` / `Judging` / `WJ` / `Pretests passed` / `Happy New Year`
+  等中间态一律不写入后端（错题本规则是"非 AC 即错题"，写半截记录会污染数据）。
+- **上报失败自动重试**：提交终态确认后调用 `POST /api/ingest/submission`，**只有后端返回 2xx
+  才从本地队列移除记录**；网络超时 / 5xx / 400 等失败会按 1s → 3s → 8s 递增退避最多重试 3 次，
+  重试耗尽才丢弃（DEBUG 日志会记下失败原因与状态码）；401（Token 失效）不重试、直接丢弃并弹通知。
+- **不上传代码正文**：上报体只含结构化字段（平台、题号、判定、语言、时间、链接等），
+  **绝不发送任何请求体 / 响应体原文**，代码、cookie、token 等敏感内容不会离开浏览器。
+- **幂等**：`raw_id` 由「平台 + 题号 + 提交秒（UTC，到秒精度）」生成，后端按
+  `(user_id, platform, raw_id)` 去重，重复触发不会产生重复记录。（秒级精度下，同一分钟内的
+  第二次提交不会再被「分钟级」去重误吞。）
 
 ## 已知限制
 
-- 结果页的 DOM 选择器是按公开页面结构推断的（CF 有 Cloudflare、AtCoder 与洛谷要登录，
-  无法用命令行核实）。**请用 `DEBUG = true` 在真实站点提交一次**，把控制台
-  `[CodeActivityHub]` 开头的输出发回来即可校准。
+- **暂不支持 AcWing**：脚本头部已移除 `acwing.com` 的匹配规则，避免"声明支持却什么都不做"的
+  无效加载。如需支持请新增对应 Adapter。
+- **洛谷已实测校准（v2.2.1，2026-09-15）**，实测结论：题目页要先点「提交答案」标签才有编辑器；
+  编辑器是 CodeMirror 6；记录页的判定是**页面直出**的（「评测状态」旁 `<span class="lcolor--*">`
+  里是 `Accepted` / `Unaccepted`），既不走 XHR 也不走 WebSocket——所以脚本在结果页会每 2.5 秒
+  重读一次 DOM 直到出终态（约 2.5 分钟后停止）。
+- **CF / AtCoder 仍未实测**：DOM 选择器是按公开页面结构推断的（CF 有 Cloudflare、AtCoder 要登录，
+  命令行核实不了）。**请用 `DEBUG = true` 在真实站点提交一次**，把控制台 `[CodeActivityHub]`
+  开头的输出发回来即可校准。
+- **Codeforces 判定新增**：`Idleness limit exceeded`（交互题怠惰超限）已映射为 `ILE`；
+  `Pretests passed` / `Happy New Year` 视为非终态，继续等待系统测试出最终结果。
+- 上报字段统一强转成字符串：洛谷的 `lang`、CF 的 `programTypeId`、AtCoder 的 `LanguageId`
+  都是数字 id，直接透传会让后端反序列化失败返回 400。
+- 语言字段存的是平台原始 id（如洛谷 `28`），没有翻译成 `C++14` 之类的名字。
 - 不采集难度与算法标签（页面里拿不到），浏览器上报的记录在看板上 tags/difficulty 为空。
