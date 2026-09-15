@@ -162,6 +162,17 @@ const app = createApp({
     });
 
     const currentTab = ref("overview"); // 'overview', 'submissions', 'mistakes', 'settings'
+
+    // 系统设置的分栏（入口仍然是头像菜单里的「系统设置」）
+    const settingsTabs = [
+      ["accounts", "平台账号", "各平台账号与 Cookie"],
+      ["script", "脚本接入", "浏览器脚本 Token"],
+      ["data", "数据与同步", "数据来源与同步方式"],
+      ["security", "账号安全", "登录密码"]
+    ];
+    const settingsTab = ref("accounts");
+    // 添加账号表单默认收起：五个平台常年挂着十五个输入框太吵
+    const addingPlatform = ref("");
     const searchKeyword = ref("");
     // 搜索防抖：输入不立刻对上千条记录做多字段过滤，停顿 400ms 后再应用（与题库关键词一致）。
     // 真正的过滤用 searchKeywordDebounced，避免每次按键都卡顿。
@@ -1344,6 +1355,7 @@ const app = createApp({
             showToast("账号已保存" + (acc.selected ? "并启用" : ""), "success");
           }
           accountForms.value[platform] = { name: "", handle: "", cookie: "" };
+          addingPlatform.value = "";
           await Promise.all([loadAccounts(), loadOverview()]);
         } else {
           showToast(data.detail || data.message || "账号保存失败", "error");
@@ -1921,6 +1933,9 @@ const app = createApp({
       handleLogout,
       handleChangePassword,
       currentTab,
+      settingsTabs,
+      settingsTab,
+      addingPlatform,
       searchKeyword,
       dateFilter,
       startDate,

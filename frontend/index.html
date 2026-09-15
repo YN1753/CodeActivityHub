@@ -658,214 +658,250 @@
         </div>
 
         <!-- ============ 系统设置 ============ -->
-        <div v-show="currentTab === 'settings'" class="space-y-6">
+        <!-- 入口只有头像菜单里的「系统设置」；进来后按主题分栏，避免一屏堆到底 -->
+        <div v-show="currentTab === 'settings'" class="space-y-5">
+          <div>
+            <h1 class="text-lg font-semibold text-slate-900">系统设置</h1>
+            <p class="ui-hint mt-0.5">平台账号、脚本接入、数据同步与账号安全</p>
+          </div>
 
-          <section class="space-y-3">
-            <div class="flex items-baseline justify-between">
-              <h2 class="text-sm font-semibold">平台账号</h2>
-              <span class="ui-hint">同一平台可保存多个，单选切换启用的账号</span>
-            </div>
+          <div class="grid lg:grid-cols-[210px_minmax(0,1fr)] gap-6 items-start">
+            <!-- 分栏导航：宽屏左侧竖排，窄屏横向滚动 -->
+            <nav class="lg:sticky lg:top-20 flex lg:flex-col gap-1 overflow-x-auto lg:overflow-visible -mx-1 px-1">
+              <button v-for="t in settingsTabs" :key="t[0]" @click="settingsTab = t[0]"
+                      :class="['text-left px-3 py-2 rounded-lg text-sm whitespace-nowrap transition-colors border shrink-0 lg:shrink',
+                               settingsTab === t[0] ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium'
+                                                    : 'border-transparent text-slate-600 hover:bg-slate-100']">
+                {{ t[1] }}
+                <span v-if="settingsTab === t[0]"
+                      class="hidden lg:block text-[11px] font-normal text-blue-600/80 mt-0.5">{{ t[2] }}</span>
+              </button>
+            </nav>
 
-            <!-- 填写说明统一放这里：输入框里只写"填什么"，避免每张卡片重复一遍流程 -->
-            <details class="ui-card p-4 text-xs text-slate-600">
-              <summary class="cursor-pointer font-medium text-slate-700">填写说明（用户名 / Cookie 怎么拿）</summary>
-              <div class="mt-3 space-y-2">
-                <p class="text-slate-500">填了 Cookie 的平台才能同步历史提交记录；不填也能校验账号，只是同步不到记录。</p>
-                <div class="overflow-x-auto">
-                  <table class="w-full text-left">
-                    <thead class="text-slate-400">
-                      <tr>
-                        <th class="py-1 pr-4 font-normal">平台</th>
-                        <th class="py-1 pr-4 font-normal">用户名</th>
-                        <th class="py-1 font-normal">Cookie</th>
-                      </tr>
-                    </thead>
-                    <tbody class="align-top">
-                      <tr>
-                        <td class="py-1 pr-4">Codeforces</td>
-                        <td class="py-1 pr-4">主页 URL 里的 handle</td>
-                        <td class="py-1">不需要</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1 pr-4">LeetCode</td>
-                        <td class="py-1 pr-4"><code>/u/</code> 后面那段，不是昵称</td>
-                        <td class="py-1">需要 <code>LEETCODE_SESSION</code>：登录后 F12 → Network → 任意请求 → Request Headers 复制整段 cookie</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1 pr-4">AtCoder</td>
-                        <td class="py-1 pr-4">主页 URL 里的 handle</td>
-                        <td class="py-1">不需要</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1 pr-4">洛谷</td>
-                        <td class="py-1 pr-4">纯数字 UID</td>
-                        <td class="py-1">需要 <code>__client_id</code>：同样方式复制整段 cookie（UID 会自动补上）</td>
-                      </tr>
-                      <tr>
-                        <td class="py-1 pr-4">AcWing</td>
-                        <td class="py-1 pr-4">空间 ID</td>
-                        <td class="py-1">无需填写（只能用浏览器脚本接入）</td>
-                      </tr>
-                    </tbody>
-                  </table>
+            <div class="min-w-0 space-y-5">
+
+              <!-- ① 平台账号 -->
+              <section v-show="settingsTab === 'accounts'" class="space-y-4">
+                <div class="flex items-baseline justify-between gap-3">
+                  <h2 class="text-sm font-semibold">平台账号</h2>
+                  <span class="ui-hint">同一平台可保存多个，单选切换启用的账号</span>
                 </div>
-              </div>
-            </details>
-            <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-              <div v-for="(meta, key) in platformMeta" :key="key" class="ui-card p-4 space-y-3">
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 rounded-full" :class="meta.dot"></span>
-                    <span class="text-sm font-semibold">{{ meta.label }}</span>
+
+                <!-- 填写说明统一放这里：输入框里只写"填什么"，避免每张卡片重复一遍流程 -->
+                <details class="ui-card p-4 text-xs text-slate-600">
+                  <summary class="cursor-pointer font-medium text-slate-700">填写说明（用户名 / Cookie 怎么拿）</summary>
+                  <div class="mt-3 space-y-2">
+                    <p class="text-slate-500">填了 Cookie 的平台才能同步历史提交记录；不填也能校验账号，只是同步不到记录。</p>
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-left">
+                        <thead class="text-slate-400">
+                          <tr>
+                            <th class="py-1 pr-4 font-normal">平台</th>
+                            <th class="py-1 pr-4 font-normal">用户名</th>
+                            <th class="py-1 font-normal">Cookie</th>
+                          </tr>
+                        </thead>
+                        <tbody class="align-top">
+                          <tr>
+                            <td class="py-1 pr-4">Codeforces</td>
+                            <td class="py-1 pr-4">主页 URL 里的 handle</td>
+                            <td class="py-1">不需要</td>
+                          </tr>
+                          <tr>
+                            <td class="py-1 pr-4">LeetCode</td>
+                            <td class="py-1 pr-4"><code>/u/</code> 后面那段，不是昵称</td>
+                            <td class="py-1">需要 <code>LEETCODE_SESSION</code>：登录后 F12 → Network → 任意请求 → Request Headers 复制整段 cookie</td>
+                          </tr>
+                          <tr>
+                            <td class="py-1 pr-4">AtCoder</td>
+                            <td class="py-1 pr-4">主页 URL 里的 handle</td>
+                            <td class="py-1">不需要</td>
+                          </tr>
+                          <tr>
+                            <td class="py-1 pr-4">洛谷</td>
+                            <td class="py-1 pr-4">纯数字 UID</td>
+                            <td class="py-1">需要 <code>__client_id</code>：同样方式复制整段 cookie（UID 会自动补上）</td>
+                          </tr>
+                          <tr>
+                            <td class="py-1 pr-4">AcWing</td>
+                            <td class="py-1 pr-4">空间 ID</td>
+                            <td class="py-1">无需填写（只能用浏览器脚本接入）</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                  <div class="flex items-center gap-2">
-                    <span class="ui-hint">{{ accountsFor(key).length }} 个账号</span>
-                    <button @click="syncPlatformRecords(key)"
-                            :disabled="syncingPlatform[key] || accountsFor(key).length === 0 || meta.canSync === false"
-                            :title="meta.canSync === false ? meta.label + ' 没有公开的历史记录接口，提交记录请用浏览器脚本接入' : '从 ' + meta.label + ' 拉取历史提交记录（浏览器脚本只负责实时推送）'"
-                            class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed">
-                      {{ syncingPlatform[key] ? '同步中…' : '同步记录' }}
+                </details>
+
+                <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  <div v-for="(meta, key) in platformMeta" :key="key" class="ui-card p-4 space-y-3">
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                          <span class="w-2 h-2 rounded-full" :class="meta.dot"></span>
+                          <span class="text-sm font-semibold">{{ meta.label }}</span>
+                        </div>
+                        <div class="ui-hint mt-0.5">{{ accountsFor(key).length }} 个账号</div>
+                      </div>
+                      <button @click="syncPlatformRecords(key)"
+                              :disabled="syncingPlatform[key] || accountsFor(key).length === 0 || meta.canSync === false"
+                              :title="meta.canSync === false ? meta.label + ' 没有公开的历史记录接口，提交记录请用浏览器脚本接入' : '从 ' + meta.label + ' 拉取历史提交记录（浏览器脚本只负责实时推送）'"
+                              class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
+                        {{ syncingPlatform[key] ? '同步中…' : '同步记录' }}
+                      </button>
+                    </div>
+
+                    <div class="space-y-2">
+                      <div v-for="acc in accountsFor(key)" :key="acc.id"
+                           :class="['p-2.5 rounded-lg border text-xs space-y-1',
+                                    acc.selected ? 'bg-blue-50/60 border-blue-200' : 'bg-slate-50 border-slate-200']">
+                        <!-- 编辑态：就地改备注名 / 用户名 / Cookie -->
+                        <template v-if="editingAccountId === acc.id">
+                          <input v-model="editAccountForm.name" type="text" placeholder="备注名（可选）" class="ui-input text-xs py-1">
+                          <input v-model="editAccountForm.handle" type="text" :placeholder="meta.handlePlaceholder" class="ui-input font-mono text-xs py-1">
+                          <input v-if="meta.cookie" v-model="editAccountForm.cookie" type="text" :placeholder="meta.cookiePlaceholder" class="ui-input font-mono text-xs py-1">
+                          <div v-if="meta.cookie" class="text-[11px] text-slate-400">Cookie 留空＝保持原值</div>
+                          <div class="flex flex-wrap gap-2 pt-0.5">
+                            <button @click="saveEditAccount(acc, true)" class="btn-primary py-1 px-2 text-[11px]">保存并验证</button>
+                            <button @click="saveEditAccount(acc, false)" class="btn-secondary py-1 px-2 text-[11px]">仅保存</button>
+                            <button @click="cancelEditAccount" class="px-2 py-1 rounded text-[11px] border border-slate-200 hover:bg-slate-100">取消</button>
+                          </div>
+                        </template>
+
+                        <!-- 展示态 -->
+                        <template v-else>
+                          <div class="flex items-center justify-between gap-2">
+                            <label class="flex items-center gap-2 cursor-pointer min-w-0">
+                              <input type="radio" :name="'account-' + key" :checked="acc.selected" @change="selectAccount(acc.id)" class="accent-blue-600">
+                              <span class="truncate font-medium" :class="acc.selected ? 'text-blue-700' : 'text-slate-700'">{{ acc.name }}</span>
+                            </label>
+                            <div class="flex items-center gap-1 shrink-0">
+                              <button @click="startEditAccount(acc)"
+                                      class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100">编辑</button>
+                              <button @click="verifyAccount(acc.id)" :disabled="isVerifyingAccount[acc.id]"
+                                      class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100 disabled:opacity-50">
+                                {{ isVerifyingAccount[acc.id] ? '验证中' : '验证' }}
+                              </button>
+                              <button @click="deleteAccount(acc.id)"
+                                      class="px-2 py-0.5 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100">删除</button>
+                            </div>
+                          </div>
+                          <div class="flex items-center justify-between gap-2 font-mono text-[11px] text-slate-400">
+                            <span class="truncate">{{ acc.handle }}</span>
+                            <span>{{ acc.cookie_hint }}</span>
+                          </div>
+                          <div v-if="acc.message" class="text-[11px] truncate"
+                               :class="acc.status === 'ok' ? 'text-emerald-700' : acc.status === 'error' ? 'text-rose-700' : 'text-slate-400'"
+                               :title="acc.message">{{ acc.selected ? '● 启用中 · ' : '' }}{{ acc.message }}</div>
+                        </template>
+                      </div>
+                      <div v-if="accountsFor(key).length === 0" class="text-xs text-slate-400">尚未保存账号</div>
+                    </div>
+
+                    <!-- 添加账号默认收起，减少卡片噪音 -->
+                    <div class="pt-3 border-t border-slate-100">
+                      <button v-if="addingPlatform !== key" @click="addingPlatform = key"
+                              class="text-xs text-blue-700 hover:text-blue-800">+ 添加账号</button>
+                      <div v-else class="space-y-2">
+                        <input v-model="accountForms[key].name" type="text" placeholder="备注名（可选）" class="ui-input text-xs py-1.5">
+                        <input v-model="accountForms[key].handle" type="text" :placeholder="meta.handlePlaceholder" class="ui-input font-mono text-xs py-1.5">
+                        <input v-if="meta.cookie" v-model="accountForms[key].cookie" type="text" :placeholder="meta.cookiePlaceholder" class="ui-input font-mono text-xs py-1.5">
+                        <div class="flex gap-2">
+                          <button @click="addAccount(key, true)" class="btn-primary flex-1 py-1.5 text-xs">保存并验证</button>
+                          <button @click="addAccount(key, false)" class="btn-secondary py-1.5 text-xs">仅保存</button>
+                          <button @click="addingPlatform = ''" class="px-2 py-1.5 rounded text-xs border border-slate-200 hover:bg-slate-100">取消</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ② 脚本接入 -->
+              <section v-show="settingsTab === 'script'" class="space-y-4">
+                <div class="flex items-baseline justify-between gap-3">
+                  <h2 class="text-sm font-semibold">浏览器脚本 Token</h2>
+                  <button @click="createIngestToken" :disabled="isIssuingToken" class="btn-primary text-xs">
+                    {{ isIssuingToken ? '生成中…' : '生成新 Token' }}
+                  </button>
+                </div>
+                <div class="ui-card p-4 space-y-3">
+                  <p class="ui-hint">
+                    Token 独立于登录会话、长期有效，只用于提交记录接入（其他接口返回 403）。
+                    明文只在生成或轮换时显示一次，之后仅能看到提示与最后使用时间。
+                  </p>
+                  <div v-if="freshToken" class="p-3 rounded-lg bg-amber-50 border border-amber-200 space-y-2">
+                    <div class="text-xs font-medium text-amber-800">「{{ freshTokenName }}」的新 Token —— 只显示这一次，请立即复制</div>
+                    <div class="flex flex-col sm:flex-row gap-2">
+                      <input :value="freshToken" readonly @focus="$event.target.select()" class="ui-input font-mono text-xs flex-1">
+                      <button @click="copyFreshToken" class="btn-primary text-xs whitespace-nowrap">复制</button>
+                      <button @click="dismissFreshToken" class="btn-secondary text-xs whitespace-nowrap">我已保存</button>
+                    </div>
+                  </div>
+
+                  <div class="space-y-1.5">
+                    <div v-for="tk in ingestTokens" :key="tk.id"
+                         :class="['p-2.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs',
+                                  isTokenActive(tk) ? 'border-slate-200 bg-slate-50' : 'border-slate-200 opacity-60']">
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                          <span class="font-medium" :class="isTokenActive(tk) ? 'text-slate-900' : 'text-slate-400'">{{ tk.name }}</span>
+                          <span :class="['pill', isTokenActive(tk) ? 'pill-ok' : 'pill-error']">{{ isTokenActive(tk) ? '生效中' : '已吊销' }}</span>
+                        </div>
+                        <div class="font-mono text-[11px] text-slate-400 mt-0.5">
+                          {{ tk.token_hint }}•••• · 创建 {{ (tk.created_at || '').slice(0, 10) }} · 最后使用 {{ tk.last_used_at ? formatTimeAgo(tk.last_used_at) : '从未使用' }}
+                        </div>
+                      </div>
+                      <div v-if="isTokenActive(tk)" class="flex gap-1.5 shrink-0">
+                        <button @click="rotateIngestToken(tk)" :disabled="tokenActionId === tk.id" class="btn-secondary text-[11px] py-1">轮换</button>
+                        <button @click="revokeIngestToken(tk)" :disabled="tokenActionId === tk.id" class="px-2 py-1 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 disabled:opacity-50">吊销</button>
+                      </div>
+                    </div>
+                    <div v-if="ingestTokens.length === 0" class="text-xs text-slate-400">还没有 Token，点右上角「生成新 Token」。</div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ③ 数据与同步 -->
+              <section v-show="settingsTab === 'data'" class="space-y-4">
+                <h2 class="text-sm font-semibold">数据与同步</h2>
+                <div class="ui-card p-4 space-y-2">
+                  <div class="text-xs font-semibold text-slate-900">数据来源</div>
+                  <p class="ui-hint">看板不在后台轮询：历史数据在你点击「刷新」或某个平台的「同步记录」时，通过各平台公开接口（或你填的 Cookie）读取；提交后的即时结果由长效 Token + 浏览器脚本推送。</p>
+                  <p class="ui-hint">平台凭证只保存在本地数据库，只用于以你的身份向对应平台读取提交记录，不会发送给其他站点。</p>
+                  <div class="pt-3 flex justify-end border-t border-slate-100">
+                    <button @click="saveSettingsAndSync" :disabled="isSaving" class="btn-primary text-xs">
+                      {{ isSaving ? '正在保存并同步…' : '保存并同步' }}
                     </button>
                   </div>
                 </div>
+              </section>
 
-                <div class="space-y-1.5">
-                  <div v-for="acc in accountsFor(key)" :key="acc.id"
-                       :class="['p-2.5 rounded-lg border text-xs space-y-1',
-                                acc.selected ? 'bg-blue-50/60 border-blue-200' : 'bg-slate-50 border-slate-200']">
-                    <!-- 编辑态：就地改备注名 / 用户名 / Cookie -->
-                    <template v-if="editingAccountId === acc.id">
-                      <input v-model="editAccountForm.name" type="text" placeholder="备注名（可选）" class="ui-input text-xs py-1">
-                      <input v-model="editAccountForm.handle" type="text" :placeholder="meta.handlePlaceholder" class="ui-input font-mono text-xs py-1">
-                      <input v-if="meta.cookie" v-model="editAccountForm.cookie" type="text" :placeholder="meta.cookiePlaceholder" class="ui-input font-mono text-xs py-1">
-                      <div v-if="meta.cookie" class="text-[11px] text-slate-400">Cookie 留空＝保持原值</div>
-                      <div class="flex flex-wrap gap-2 pt-0.5">
-                        <button @click="saveEditAccount(acc, true)" class="btn-primary py-1 px-2 text-[11px]">保存并验证</button>
-                        <button @click="saveEditAccount(acc, false)" class="btn-secondary py-1 px-2 text-[11px]">仅保存</button>
-                        <button @click="cancelEditAccount" class="px-2 py-1 rounded text-[11px] border border-slate-200 hover:bg-slate-100">取消</button>
-                      </div>
-                    </template>
-
-                    <!-- 展示态 -->
-                    <template v-else>
-                      <div class="flex items-center justify-between gap-2">
-                        <label class="flex items-center gap-2 cursor-pointer min-w-0">
-                          <input type="radio" :name="'account-' + key" :checked="acc.selected" @change="selectAccount(acc.id)" class="accent-blue-600">
-                          <span class="truncate font-medium" :class="acc.selected ? 'text-blue-700' : 'text-slate-700'">{{ acc.name }}</span>
-                        </label>
-                        <div class="flex items-center gap-1 shrink-0">
-                          <button @click="startEditAccount(acc)"
-                                  class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100">编辑</button>
-                          <button @click="verifyAccount(acc.id)" :disabled="isVerifyingAccount[acc.id]"
-                                  class="px-2 py-0.5 rounded text-[11px] border border-slate-200 hover:bg-slate-100 disabled:opacity-50">
-                            {{ isVerifyingAccount[acc.id] ? '验证中' : '验证' }}
-                          </button>
-                          <button @click="deleteAccount(acc.id)"
-                                  class="px-2 py-0.5 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100">删除</button>
-                        </div>
-                      </div>
-                      <div class="flex items-center justify-between gap-2 font-mono text-[11px] text-slate-400">
-                        <span class="truncate">{{ acc.handle }}</span>
-                        <span>{{ acc.cookie_hint }}</span>
-                      </div>
-                      <div v-if="acc.message" class="text-[11px] truncate"
-                           :class="acc.status === 'ok' ? 'text-emerald-700' : acc.status === 'error' ? 'text-rose-700' : 'text-slate-400'"
-                           :title="acc.message">{{ acc.selected ? '● 启用中 · ' : '' }}{{ acc.message }}</div>
-                    </template>
-                  </div>
-                  <div v-if="accountsFor(key).length === 0" class="text-xs text-slate-400">尚未保存账号</div>
-                </div>
-
-                <div class="pt-3 border-t border-slate-100 space-y-2">
-                  <input v-model="accountForms[key].name" type="text" placeholder="备注名（可选）" class="ui-input text-xs py-1.5">
-                  <input v-model="accountForms[key].handle" type="text" :placeholder="meta.handlePlaceholder" class="ui-input font-mono text-xs py-1.5">
-                  <input v-if="meta.cookie" v-model="accountForms[key].cookie" type="text" :placeholder="meta.cookiePlaceholder" class="ui-input font-mono text-xs py-1.5">
-                  <div class="flex gap-2">
-                    <button @click="addAccount(key, true)" class="btn-primary flex-1 py-1.5 text-xs">保存并验证</button>
-                    <button @click="addAccount(key, false)" class="btn-secondary py-1.5 text-xs">仅保存</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <!-- 长效 Token -->
-          <section class="space-y-3">
-            <div class="flex items-baseline justify-between">
-              <h2 class="text-sm font-semibold">浏览器脚本 Token</h2>
-              <button @click="createIngestToken" :disabled="isIssuingToken" class="btn-primary text-xs">
-                {{ isIssuingToken ? '生成中…' : '生成新 Token' }}
-              </button>
-            </div>
-            <div class="ui-card p-4 space-y-3">
-              <p class="ui-hint">
-                Token 独立于登录会话、长期有效，只用于提交记录接入（其他接口返回 403）。
-                明文只在生成或轮换时显示一次，之后仅能看到提示与最后使用时间。
-              </p>
-              <div v-if="freshToken" class="p-3 rounded-lg bg-amber-50 border border-amber-200 space-y-2">
-                <div class="text-xs font-medium text-amber-800">「{{ freshTokenName }}」的新 Token —— 只显示这一次，请立即复制</div>
-                <div class="flex flex-col sm:flex-row gap-2">
-                  <input :value="freshToken" readonly @focus="$event.target.select()" class="ui-input font-mono text-xs flex-1">
-                  <button @click="copyFreshToken" class="btn-primary text-xs whitespace-nowrap">复制</button>
-                  <button @click="dismissFreshToken" class="btn-secondary text-xs whitespace-nowrap">我已保存</button>
-                </div>
-              </div>
-
-              <div class="space-y-1.5">
-                <div v-for="tk in ingestTokens" :key="tk.id"
-                     :class="['p-2.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs',
-                              isTokenActive(tk) ? 'border-slate-200 bg-slate-50' : 'border-slate-200 opacity-60']">
-                  <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                      <span class="font-medium" :class="isTokenActive(tk) ? 'text-slate-900' : 'text-slate-400'">{{ tk.name }}</span>
-                      <span :class="['pill', isTokenActive(tk) ? 'pill-ok' : 'pill-error']">{{ isTokenActive(tk) ? '生效中' : '已吊销' }}</span>
-                    </div>
-                    <div class="font-mono text-[11px] text-slate-400 mt-0.5">
-                      {{ tk.token_hint }}•••• · 创建 {{ (tk.created_at || '').slice(0, 10) }} · 最后使用 {{ tk.last_used_at ? formatTimeAgo(tk.last_used_at) : '从未使用' }}
+              <!-- ④ 账号安全 -->
+              <section v-show="settingsTab === 'security'" class="space-y-4">
+                <h2 class="text-sm font-semibold">账号安全</h2>
+                <div class="ui-card p-4 space-y-3 max-w-xl">
+                  <div class="text-xs font-semibold text-slate-900">修改登录密码</div>
+                  <div class="space-y-2">
+                    <input v-model="pwdForm.oldPassword" type="password" placeholder="原密码" class="ui-input font-mono">
+                    <div class="grid sm:grid-cols-2 gap-2">
+                      <input v-model="pwdForm.newPassword" type="password" placeholder="新密码（至少 6 位）" class="ui-input font-mono">
+                      <input v-model="pwdForm.confirmNewPassword" type="password" placeholder="再次输入新密码" class="ui-input font-mono">
                     </div>
                   </div>
-                  <div v-if="isTokenActive(tk)" class="flex gap-1.5 shrink-0">
-                    <button @click="rotateIngestToken(tk)" :disabled="tokenActionId === tk.id" class="btn-secondary text-[11px] py-1">轮换</button>
-                    <button @click="revokeIngestToken(tk)" :disabled="tokenActionId === tk.id" class="px-2 py-1 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 disabled:opacity-50">吊销</button>
+                  <div class="flex items-center justify-between gap-3">
+                    <p class="ui-hint">修改成功后所有登录会话与脚本 Token 都会被吊销。</p>
+                    <button @click="handleChangePassword" :disabled="isChangingPwd" class="btn-secondary text-xs shrink-0">
+                      {{ isChangingPwd ? '正在修改…' : '确认修改' }}
+                    </button>
                   </div>
                 </div>
-                <div v-if="ingestTokens.length === 0" class="text-xs text-slate-400">还没有 Token，点右上角「生成新 Token」。</div>
-              </div>
+              </section>
+
             </div>
-          </section>
-
-          <div class="grid lg:grid-cols-2 gap-4">
-            <!-- 修改密码 -->
-            <section class="ui-card p-4 space-y-3">
-              <h2 class="text-sm font-semibold">修改密码</h2>
-              <div class="space-y-2">
-                <input v-model="pwdForm.oldPassword" type="password" placeholder="原密码" class="ui-input font-mono">
-                <div class="grid sm:grid-cols-2 gap-2">
-                  <input v-model="pwdForm.newPassword" type="password" placeholder="新密码（至少 6 位）" class="ui-input font-mono">
-                  <input v-model="pwdForm.confirmNewPassword" type="password" placeholder="再次输入新密码" class="ui-input font-mono">
-                </div>
-              </div>
-              <div class="flex items-center justify-between gap-3">
-                <p class="ui-hint">修改成功后所有登录会话与脚本 Token 都会被吊销。</p>
-                <button @click="handleChangePassword" :disabled="isChangingPwd" class="btn-secondary text-xs shrink-0">
-                  {{ isChangingPwd ? '正在修改…' : '确认修改' }}
-                </button>
-              </div>
-            </section>
-
-            <!-- 说明 -->
-            <section class="ui-panel p-4 space-y-1.5">
-              <div class="text-xs font-semibold text-slate-900">数据来源说明</div>
-              <p class="ui-hint">看板不在后台轮询：历史数据在你点击「刷新看板」时通过各平台公开接口读取；提交后的即时结果由长效 Token + 浏览器脚本推送。</p>
-              <p class="ui-hint">洛谷的 <code class="text-sky-700">__client_id</code> 保存在本地数据库，只用于以你的身份向洛谷读取提交记录，不会发送给其他站点。</p>
-              <div class="pt-2 flex justify-end border-t border-slate-200">
-                <button @click="saveSettingsAndSync" :disabled="isSaving" class="btn-primary text-xs">
-                  {{ isSaving ? '正在保存并同步…' : '保存并同步' }}
-                </button>
-              </div>
-            </section>
           </div>
         </div>
+
       </main>
     </template>
 
