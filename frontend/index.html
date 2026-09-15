@@ -617,12 +617,8 @@
                   <tr v-for="(sub, index) in paginatedSubmissions" :key="sub.id || ('sub-' + index)">
                     <td>
                       <div class="flex items-center gap-2">
-                        <span :class="['pill shrink-0',
-                                       sub.platform === 'codeforces' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                                       sub.platform === 'atcoder' ? 'bg-purple-50 text-purple-700 border-purple-200' :
-                                       sub.platform === 'luogu' ? 'bg-sky-50 text-sky-700 border-sky-200' :
-                                       sub.platform === 'leetcode' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                                       'bg-indigo-50 text-indigo-700 border-indigo-200']">{{ platformBadge(sub.platform) }}</span>
+                        <span :class="['shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-semibold text-white ring-1 ring-inset ring-black/10', platformIconClass(sub.platform)]"
+                              :title="platformLabel(sub.platform)">{{ platformIconText(sub.platform) }}</span>
                         <a v-if="sub.submission_url" :href="sub.submission_url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">
                           <span class="font-mono text-xs text-slate-400 mr-1">{{ sub.problem_id }}</span>{{ sub.problem_title }}
                         </a>
@@ -719,11 +715,8 @@
                   <tr v-for="item in filteredMistakes" :key="item.platform + item.problem_id">
                     <td>
                       <div class="flex items-center gap-2">
-                        <span :class="['pill shrink-0',
-                                       item.platform === 'codeforces' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                                       item.platform === 'atcoder' ? 'bg-purple-50 text-purple-700 border-purple-200' :
-                                       item.platform === 'luogu' ? 'bg-sky-50 text-sky-700 border-sky-200' :
-                                       'bg-indigo-50 text-indigo-700 border-indigo-200']">{{ platformBadge(item.platform) }}</span>
+                        <span :class="['shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-semibold text-white ring-1 ring-inset ring-black/10', platformIconClass(item.platform)]"
+                              :title="platformLabel(item.platform)">{{ platformIconText(item.platform) }}</span>
                         <a v-if="item.submission_url" :href="item.submission_url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">
                           <span class="font-mono text-xs text-slate-400 mr-1">{{ item.problem_id }}</span>{{ item.problem_title }}
                         </a>

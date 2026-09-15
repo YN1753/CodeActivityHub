@@ -1925,15 +1925,23 @@ const app = createApp({
       return timeStr;
     };
 
-    const platformBadge = (platform) => {
-      switch (platform) {
-        case "codeforces": return "CF";
-        case "atcoder": return "ATCODER";
-        case "luogu": return "LUOGU";
-        case "leetcode": return "LEETCODE";
-        default: return "ACWING";
-      }
-    };
+    // 平台图标：小圆角方块 + 品牌色 + 两字缩写，比原来的长英文徽章好扫读。
+    // 缩写复用 MISTAKE_PLATFORM_SHORT，避免两处映射各自漂移。
+    const platformIconText = (platform) => MISTAKE_PLATFORM_SHORT[platform] || "??";
+    const platformIconClass = (platform) => ({
+      codeforces: "bg-blue-600",
+      atcoder: "bg-slate-800",
+      luogu: "bg-sky-600",
+      leetcode: "bg-amber-700",
+      acwing: "bg-indigo-600"
+    }[platform] || "bg-slate-500");
+    const platformLabel = (platform) => ({
+      codeforces: "Codeforces",
+      atcoder: "AtCoder",
+      luogu: "洛谷",
+      leetcode: "LeetCode",
+      acwing: "AcWing"
+    }[platform] || platform);
 
     // 顶部平台指示灯：返回圆点后缀（dot-ok / dot-warn / dot-error / dot-muted）。
     // unsupported（平台没有公开校验接口）不是故障，用中性灰点。
@@ -2145,7 +2153,9 @@ const app = createApp({
       syncNow,
       saveSettingsAndSync,
       formatTimeAgo,
-      platformBadge,
+      platformIconText,
+      platformIconClass,
+      platformLabel,
       getStatusClass,
       // Problems exports
       problems,
