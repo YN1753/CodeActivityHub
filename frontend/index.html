@@ -395,7 +395,7 @@
               </h2>
               <div class="flex items-center gap-1.5 text-xs text-slate-400">
                 每页
-                <ui-select :model-value="problemsLimit" :options="pageSizeOptions" dense @update:model-value="changeProblemsLimit"></ui-select>
+                <ui-select :model-value="problemsLimit" :options="problemsPageSizeOptions" dense @update:model-value="changeProblemsLimit"></ui-select>
               </div>
             </div>
 
@@ -516,7 +516,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="sub in paginatedSubmissions" :key="sub.id">
+                  <tr v-for="(sub, index) in paginatedSubmissions" :key="sub.id || ('sub-' + index)">
                     <td>
                       <div class="flex items-center gap-2">
                         <span :class="['pill shrink-0',

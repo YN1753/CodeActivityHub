@@ -1,4 +1,4 @@
-import { createApp, ref, onMounted, computed, nextTick, watch } from 'vue';
+import { createApp, ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue';
 import * as echarts from 'echarts';
 import './style.css';
 
@@ -163,6 +163,16 @@ const app = createApp({
 
     const currentTab = ref("overview"); // 'overview', 'submissions', 'mistakes', 'settings'
     const searchKeyword = ref("");
+    // 搜索防抖：输入不立刻对上千条记录做多字段过滤，停顿 400ms 后再应用（与题库关键词一致）。
+    // 真正的过滤用 searchKeywordDebounced，避免每次按键都卡顿。
+    const searchKeywordDebounced = ref("");
+    let searchKeywordTimer = null;
+    watch(searchKeyword, () => {
+      clearTimeout(searchKeywordTimer);
+      searchKeywordTimer = setTimeout(() => {
+        searchKeywordDebounced.value = searchKeyword.value;
+      }, 400);
+    });
     const dateFilter = ref("all"); // 'all', 'today', '7d', '30d', 'year', 'custom'
     const startDate = ref("");
     const endDate = ref("");
@@ -238,6 +248,7 @@ const app = createApp({
 
     const showGuide = ref(false);
     const toast = ref({ show: false, message: "", type: "success" });
+    let toastTimer = null; // 复用同一个定时器，避免连续 toast 互相提前关闭
     const warningBanner = ref("");
 
     const toastClass = computed(() => {
@@ -254,11 +265,44 @@ const app = createApp({
     let tagBarChart = null;
     let platformPieChart = null;
 
+    // --- 安全：HTML 转义，防止外部数据拼进 ECharts tooltip 造成 XSS ---
+    const escapeHtml = (s) => {
+      if (s === null || s === undefined) return "";
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    };
+
+    // 简单节流：在 wait 内最多触发一次，末尾补一次，避免 resize 时全量重绘热力图过频
+    const throttle = (fn, wait) => {
+      let last = 0;
+      let timer = null;
+      return (...args) => {
+        const now = Date.now();
+        const remaining = wait - (now - last);
+        if (remaining <= 0) {
+          last = now;
+          fn(...args);
+        } else if (!timer) {
+          timer = setTimeout(() => {
+            last = Date.now();
+            timer = null;
+            fn(...args);
+          }, remaining);
+        }
+      };
+    };
+
     // --- Toast 消息提示 ---
     const showToast = (message, type = "success") => {
+      if (toastTimer) clearTimeout(toastTimer);
       toast.value = { show: true, message, type };
-      setTimeout(() => {
+      toastTimer = setTimeout(() => {
         toast.value.show = false;
+        toastTimer = null;
       }, 3500);
     };
 
@@ -270,6 +314,35 @@ const app = createApp({
       localStorage.removeItem("codeactivityhub_user");
       currentUser.value = null;
       isAuthChecking.value = false;
+    };
+
+    // 统一清空用户维度的内存态：换账号时避免上一个用户的数据闪现，
+    // 同时清掉长效 Token 明文（freshToken）。退出/改密/鉴权失效时调用。
+    const resetState = () => {
+      submissions.value = [];
+      mistakes.value = [];
+      accounts.value = [];
+      ingestTokens.value = [];
+      freshToken.value = "";
+      freshTokenName.value = "";
+      currentTab.value = "overview";
+      overview.value = {
+        stats: { total_ac: 0, total_subs: 0, today_ac: 0, today_subs: 0, streak: 0, platforms: {} },
+        platforms_status: [],
+        last_sync_time: ""
+      };
+      rawHeatmap.value = [];
+      tagStats.value = [];
+      contests.value = [];
+      problems.value = [];
+      platformStatusMap.value = {};
+      problemSync.value = {};
+      warningBanner.value = "";
+      currentPage.value = 1;
+      problemsPage.value = 1;
+      selectedHeatmapYear.value = new Date().getFullYear();
+      searchKeyword.value = "";
+      searchKeywordDebounced.value = "";
     };
 
     const apiFetch = async (url, options = {}) => {
@@ -291,9 +364,27 @@ const app = createApp({
       
       const res = await fetch(reqUrl, options);
       if (res.status === 401) {
+        // 鉴权已失效：清空用户维度内存态，避免换账号时上一用户数据闪现；同时清掉长效 Token 明文
+        resetState();
         clearLocalSession();
         authError.value = "登录会话已过期，请重新登录";
         throw new Error("UNAUTHORIZED");
+      }
+      // 统一检查非 2xx（2xx 之外都视为失败），从响应体提取可读错误信息并抛出，
+      // 让各调用点能用同一个 catch 给出用户可见提示，而不是静默 console.error。
+      if (!res.ok) {
+        let msg = `请求失败 (${res.status})`;
+        try {
+          const ct = res.headers.get("content-type") || "";
+          if (ct.includes("application/json")) {
+            const body = await res.json();
+            msg = body.detail || body.message || body.error || msg;
+          } else {
+            const text = await res.text();
+            if (text) msg = text.slice(0, 200);
+          }
+        } catch (_) { /* 保留默认提示 */ }
+        throw new Error(msg);
       }
       return res;
     };
@@ -397,6 +488,7 @@ const app = createApp({
       } catch (e) {
         // ignore
       } finally {
+        resetState();
         clearLocalSession();
         showToast("已成功退出登录", "success");
       }
@@ -431,8 +523,10 @@ const app = createApp({
           showToast("密码修改成功！请重新登录", "success");
           pwdForm.value = { oldPassword: "", newPassword: "", confirmNewPassword: "" };
           // 后端已删除该用户全部会话，再调 /logout 只会拿到 401；
-          // 这里直接清理本地状态即可。
+          // 这里直接清理本地状态即可。resetState 清掉内存态与长效 Token 明文，
+          // clearLocalSession 清掉 token/用户，避免换账号时上一用户数据闪现。
           setTimeout(() => {
+            resetState();
             clearLocalSession();
           }, 1500);
         } else {
@@ -527,21 +621,21 @@ const app = createApp({
           if (startDate.value) {
             list = list.filter(s => {
               const d = submissionDate(s);
-              return !d || d >= startDate.value;
+              return d && d >= startDate.value;
             });
           }
           if (endDate.value) {
             list = list.filter(s => {
               const d = submissionDate(s);
-              return !d || d <= endDate.value;
+              return d && d <= endDate.value;
             });
           }
         }
       }
 
-      // 5. 关键词即时搜索
-      if (searchKeyword.value.trim()) {
-        const kw = searchKeyword.value.trim().toLowerCase();
+      // 5. 关键词即时搜索（用防抖后的值，避免每次按键全量过滤）
+      if (searchKeywordDebounced.value.trim()) {
+        const kw = searchKeywordDebounced.value.trim().toLowerCase();
         list = list.filter(s => 
           (s.problem_id && s.problem_id.toLowerCase().includes(kw)) ||
           (s.problem_title && s.problem_title.toLowerCase().includes(kw)) ||
@@ -580,6 +674,13 @@ const app = createApp({
       () => { currentPage.value = 1; }
     );
 
+    // 数据刷新后列表可能变短（如重新拉取提交流），把 currentPage 限制在 [1, totalPages]，
+    // 否则会停在已不存在的页码上，导致"5 / 2"、列表空白的假象。
+    watch(totalPages, (tp) => {
+      if (currentPage.value > tp) currentPage.value = tp;
+      if (currentPage.value < 1) currentPage.value = 1;
+    });
+
     const resetFilters = () => {
       dateFilter.value = "all";
       startDate.value = "";
@@ -610,7 +711,7 @@ const app = createApp({
 
     const hasActiveFilters = computed(() =>
       subFilter.value !== "all" || verdictFilter.value !== "all" || !!selectedTag.value ||
-      searchKeyword.value.trim() !== "" || dateFilter.value !== "all" || !!startDate.value || !!endDate.value
+      searchKeywordDebounced.value.trim() !== "" || dateFilter.value !== "all" || !!startDate.value || !!endDate.value
     );
 
     const pageSizeOptions = [
@@ -618,6 +719,15 @@ const app = createApp({
       { value: 50, label: "50 条" },
       { value: 100, label: "100 条" }
     ];
+    // 题库每页条数下拉：后端（如洛谷）可能返回与请求值不同的 limit，
+    // 若该值不在固定选项里，ui-select 会显示 placeholder；这里把当前 limit 也纳入选项，保证与后端对齐。
+    const problemsPageSizeOptions = computed(() => {
+      const opts = pageSizeOptions.map(o => ({ ...o }));
+      if (!opts.some(o => o.value === problemsLimit.value)) {
+        opts.push({ value: problemsLimit.value, label: `${problemsLimit.value} 条` });
+      }
+      return opts;
+    });
     const changePageSize = (n) => {
       pageSize.value = Number(n);
       currentPage.value = 1;
@@ -791,6 +901,11 @@ const app = createApp({
     });
 
     // --- Data Loaders (绑定当前用户) ---
+    // 请求序号：快速切换年份/平台/题库筛选时，旧响应若晚于新响应到达则丢弃，
+    // 避免"下拉显示 2026、图却是 2025"这类竞态。每个会竞态的加载函数各自维护一个序号。
+    let heatmapReqSeq = 0;
+    let problemsReqSeq = 0;
+
     const loadOverview = async () => {
       try {
         const res = await apiFetch("/api/stats/overview");
@@ -828,13 +943,18 @@ const app = createApp({
               .join("；")
           : "";
       } catch (e) {
-        console.error("加载 Overview 失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载 Overview 失败:", e);
+          showToast("加载总览数据失败: " + e.message, "error");
+        }
       }
     };
 
     const loadHeatmap = async () => {
+      const seq = ++heatmapReqSeq;
       try {
         const res = await apiFetch(`/api/stats/heatmap?platform=${heatmapFilter.value}&year=${selectedHeatmapYear.value}`);
+        if (seq !== heatmapReqSeq) return; // 已有更新的请求发出，本响应过期，丢弃
         const data = await res.json();
         rawHeatmap.value = data.heatmap || [];
         if (data.available_years && data.available_years.length > 0) {
@@ -845,7 +965,10 @@ const app = createApp({
         }
         renderHeatmap();
       } catch (e) {
-        console.error("加载 Heatmap 失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载 Heatmap 失败:", e);
+          showToast("加载热力图失败: " + e.message, "error");
+        }
       }
     };
 
@@ -856,7 +979,10 @@ const app = createApp({
         tagStats.value = data.tags || [];
         renderTagBarChart();
       } catch (e) {
-        console.error("加载 Tag 统计失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载 Tag 统计失败:", e);
+          showToast("加载知识点分布失败: " + e.message, "error");
+        }
       }
     };
 
@@ -866,7 +992,10 @@ const app = createApp({
         const data = await res.json();
         mistakes.value = data.mistakes || [];
       } catch (e) {
-        console.error("加载错题集失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载错题集失败:", e);
+          showToast("加载错题集失败: " + e.message, "error");
+        }
       }
     };
 
@@ -876,11 +1005,15 @@ const app = createApp({
         const data = await res.json();
         submissions.value = data.submissions || [];
       } catch (e) {
-        console.error("加载提交记录流失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载提交记录流失败:", e);
+          showToast("加载提交记录失败: " + e.message, "error");
+        }
       }
     };
 
     const loadProblems = async () => {
+      const seq = ++problemsReqSeq;
       isLoadingProblems.value = true;
       try {
         const params = new URLSearchParams({
@@ -893,12 +1026,16 @@ const app = createApp({
           solved: problemsSolved.value,
         });
         const res = await apiFetch(`/api/problems?${params.toString()}`);
+        if (seq !== problemsReqSeq) return; // 已有更新的请求发出，本响应过期，丢弃
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || data.detail || "题库加载失败");
         problems.value = data.problems || [];
         problemsTotal.value = data.total || 0;
         if (data.limit) problemsLimit.value = data.limit;
         totalProblemPages.value = Math.max(1, Math.ceil((data.total || 0) / (data.limit || problemsLimit.value)));
+        // 以当前响应的分页信息为准钳制页码：切平台后旧 totalProblemPages 可能过期，
+        // 这里用刚算出的真实页数把 problemsPage 拉回合法范围，避免停在空页。
+        if (problemsPage.value > totalProblemPages.value) problemsPage.value = totalProblemPages.value;
         problemsFacets.value = data.facets || problemsFacets.value;
         const prev = problemSync.value;
         problemSync.value = data.sync || {};
@@ -907,9 +1044,10 @@ const app = createApp({
         }
       } catch (e) {
         problems.value = [];
-        showToast("加载题库失败: " + e.message, "error");
+        if (e.message !== "UNAUTHORIZED") showToast("加载题库失败: " + e.message, "error");
       } finally {
-        isLoadingProblems.value = false;
+        // 仅当本请求仍是最新时才结束 loading，避免被过期响应提前关掉转圈
+        if (seq === problemsReqSeq) isLoadingProblems.value = false;
       }
     };
 
@@ -952,7 +1090,14 @@ const app = createApp({
       loadProblems();
     };
 
+    // 本地锁：避免重复点击「同步题库」在首个请求返回前连发多个同步任务。
+    let syncProblemsLock = false;
     const syncProblems = async () => {
+      if (syncProblemsLock) {
+        showToast("题库同步正在进行，请稍候", "info");
+        return;
+      }
+      syncProblemsLock = true;
       try {
         const res = await apiFetch(`/api/problems/sync?platform=${encodeURIComponent(problemsPlatform.value)}`, { method: "POST" });
         const data = await res.json();
@@ -960,7 +1105,9 @@ const app = createApp({
         problemSync.value = data.sync || problemSync.value;
         showToast(`题库同步已开始（${problemsPlatform.value}）`, "info");
       } catch (e) {
-        showToast("启动同步失败: " + e.message, "error");
+        if (e.message !== "UNAUTHORIZED") showToast("启动同步失败: " + e.message, "error");
+      } finally {
+        syncProblemsLock = false;
       }
     };
 
@@ -990,7 +1137,9 @@ const app = createApp({
     });
 
     const changeProblemsPage = (delta) => {
-      problemsPage.value = Math.min(totalProblemPages.value, Math.max(1, problemsPage.value + delta));
+      // 不在这里用上一份响应的 totalProblemPages 钳制——切平台后它可能已过期，
+      // 会把页码算错。直接按当前页 +/- 1 发起请求，由 loadProblems 响应后按真实页数钳制。
+      problemsPage.value = Math.max(1, problemsPage.value + delta);
       loadProblems();
     };
 
@@ -1004,7 +1153,10 @@ const app = createApp({
         contests.value = data.contests || [];
         lastContestsLoadedAt = Date.now();
       } catch (e) {
-        console.error("加载比赛日程失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载比赛日程失败:", e);
+          showToast("加载比赛日程失败: " + e.message, "error");
+        }
       }
     };
 
@@ -1034,7 +1186,10 @@ const app = createApp({
         const data = await res.json();
         ingestTokens.value = data.tokens || [];
       } catch (e) {
-        console.error("加载脚本 Token 列表失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载脚本 Token 列表失败:", e);
+          showToast("加载脚本 Token 失败: " + e.message, "error");
+        }
       } finally {
         isLoadingIngestTokens.value = false;
       }
@@ -1128,11 +1283,16 @@ const app = createApp({
       try {
         const res = await apiFetch("/api/settings");
         const data = await res.json();
-        platformStatusMap.value = data.status || {};
+        // 合并而非整体替换：loadOverview 与 loadSettings 可能并发写入同一 map，
+        // 后返回的若整体覆盖会丢掉另一方刚写入的状态。
+        platformStatusMap.value = { ...platformStatusMap.value, ...(data.status || {}) };
         await Promise.all([loadIngestTokens(), loadAccounts()]);
 
       } catch (e) {
-        console.error("加载设置失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载设置失败:", e);
+          showToast("加载设置失败: " + e.message, "error");
+        }
       }
     };
 
@@ -1147,7 +1307,10 @@ const app = createApp({
         const data = await res.json();
         accounts.value = data.accounts || [];
       } catch (e) {
-        console.error("加载平台账号失败:", e);
+        if (e.message !== "UNAUTHORIZED") {
+          console.error("加载平台账号失败:", e);
+          showToast("加载平台账号失败: " + e.message, "error");
+        }
       } finally {
         isLoadingAccounts.value = false;
       }
@@ -1317,9 +1480,9 @@ const app = createApp({
             const week = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()];
             const n = p.value[1];
             const line2 = n > 0
-              ? `<span class="text-blue-600 font-bold">${n} 次提交</span>`
+              ? `<span class="text-blue-600 font-bold">${escapeHtml(n)} 次提交</span>`
               : `<span class="text-slate-400">没有提交</span>`;
-            return `<div class="font-mono text-xs font-semibold text-slate-900">${p.value[0]} ${week}</div><div class="text-xs font-mono mt-1">${line2}</div>`;
+            return `<div class="font-mono text-xs font-semibold text-slate-900">${escapeHtml(p.value[0])} ${week}</div><div class="text-xs font-mono mt-1">${line2}</div>`;
           }
         },
         // 阶梯式分档比线性映射更接近 GitHub 的观感：低活跃有区分度，
@@ -1405,7 +1568,7 @@ const app = createApp({
           className: "echarts-tooltip",
           formatter: function (params) {
             const p = params[0];
-            return `<div class="font-mono text-xs font-semibold">${p.name}</div><div class="text-xs text-blue-600 mt-1">AC 题数: ${p.value}</div>`;
+            return `<div class="font-mono text-xs font-semibold">${escapeHtml(p.name)}</div><div class="text-xs text-blue-600 mt-1">AC 题数: ${escapeHtml(p.value)}</div>`;
           }
         },
         grid: {
@@ -1463,7 +1626,7 @@ const app = createApp({
       const option = {
         tooltip: {
           trigger: "item",
-          formatter: "{b}: {c} 题 ({d}%)",
+          formatter: (p) => `${escapeHtml(p.name)}: ${escapeHtml(p.value)} 题 (${escapeHtml(p.percent)}%)`,
           className: "echarts-tooltip"
         },
         legend: {
@@ -1607,9 +1770,13 @@ const app = createApp({
     };
 
     // --- Lifecycle ---
+    // 需要在组件卸载时释放的句柄（在 onMounted 内赋值，在 onUnmounted 内清理）
+    let tickTimer = null;
+    let resizeHandler = null;
+
     onMounted(async () => {
       // 1 秒级时间戳定时器 (仅在需要倒计时的页面跳动，后台标签页自动休眠省电)
-      setInterval(() => {
+      tickTimer = setInterval(() => {
         if (!document.hidden && (currentTab.value === 'contests' || currentTab.value === 'overview')) {
           nowTimestamp.value = Math.floor(Date.now() / 1000);
         }
@@ -1635,16 +1802,28 @@ const app = createApp({
         isAuthChecking.value = false;
       }
 
-      window.addEventListener("resize", () => {
+      // resize 节流（约 200ms）后再重绘热力图，避免拖动窗口时全量重算卡顿
+      resizeHandler = throttle(() => {
         if (currentTab.value === "overview") {
           heatmapChart && heatmapChart.resize();
           tagBarChart && tagBarChart.resize();
           platformPieChart && platformPieChart.resize();
           renderHeatmap(); // 格子尺寸按容器宽度计算，resize 后需要重算
         }
-      });
+      }, 200);
+      window.addEventListener("resize", resizeHandler);
 
       // 不再定时刷新平台数据；提交由 Tampermonkey 事件推送，页面切换或点击“立即同步”时读取最新聚合结果。
+    });
+
+    // 组件卸载：清理定时器、resize 监听与三个 ECharts 实例，避免内存与资源泄漏
+    onUnmounted(() => {
+      if (tickTimer) clearInterval(tickTimer);
+      if (problemsSyncTimer) clearInterval(problemsSyncTimer);
+      if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+      heatmapChart && heatmapChart.dispose();
+      tagBarChart && tagBarChart.dispose();
+      platformPieChart && platformPieChart.dispose();
     });
 
     // 标签页切换自动静默拉取最新数据，彻底告别手动硬刷新
@@ -1775,6 +1954,7 @@ const app = createApp({
       problemsPage,
       problemsTotal,
       problemsLimit,
+      problemsPageSizeOptions,
       totalProblemPages,
       isLoadingProblems,
       loadProblems,
