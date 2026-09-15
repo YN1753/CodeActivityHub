@@ -180,6 +180,9 @@ const app = createApp({
     const streakWrap = ref(null);
     const platformWrap = ref(null);
     const miniTip = ref(null);
+    // 与 miniTip 分开记"是否显示"：隐藏时保留内容与坐标，元素不销毁，
+    // 这样柱子之间滑动、进出时能做淡入淡出，而不是瞬移（ECharts tooltip 同款观感）。
+    const miniTipVisible = ref(false);
     const showMiniTip = (ev, wrapRef, payload) => {
       const wrap = wrapRef && wrapRef.value;
       if (!wrap) return;
@@ -189,9 +192,25 @@ const app = createApp({
       const half = 62;
       let x = bar.left - box.left + bar.width / 2;
       x = Math.max(half, Math.min(x, Math.max(half, box.width - half)));
+      // mousemove 很频繁：同一根柱子直接返回，避免每移动一像素就触发一次渲染
+      const prev = miniTip.value;
+      const sameItem = prev && prev.card === payload.card && prev.key === payload.key;
+      if (sameItem && miniTipVisible.value) return;
       miniTip.value = Object.assign({ x, y: bar.top - box.top - 8 }, payload);
+      miniTipVisible.value = true;
     };
-    const hideMiniTip = () => { miniTip.value = null; };
+    const hideMiniTip = () => { miniTipVisible.value = false; };
+
+    // 浮层样式：白底细边 + 圆角阴影 + 等宽小字（与下方图表 tooltip 同规格），
+    // 并对 left/top/opacity 做过渡，划过时是"滑过去"而不是跳过去。
+    const miniTipClass = (card) => {
+      const active = miniTipVisible.value && miniTip.value && miniTip.value.card === card;
+      return [
+        "pointer-events-none absolute z-30 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2",
+        "shadow-[0_4px_16px_rgba(16,24,40,0.12)] transition-all duration-200 ease-out",
+        active ? "opacity-100" : "opacity-0"
+      ].join(" ");
+    };
 
     // 柱体强调：填充深一档 + 浅蓝光晕 + 蓝色柔光。
     // 注意别用"深色底 + 同色描边"（蓝底画蓝边等于看不见），
@@ -215,14 +234,14 @@ const app = createApp({
 
     // 模板里用的两个薄封装，避免把长参数写在 HTML 里
     const showStreakTip = (ev, d) => showMiniTip(ev, streakWrap, {
-      card: "streak", date: d.date, solved: d.solved || 0, subs: d.subs || 0
+      card: "streak", key: d.date, date: d.date, solved: d.solved || 0, subs: d.subs || 0
     });
     // p = [平台 key, 简称, 全称, 颜色类]
     const showPlatformTip = (ev, p) => {
       const ac = Number((overview.value.stats.platforms || {})[p[0]]?.ac || 0);
       const total = Number(overview.value.stats.total_ac || 0);
       showMiniTip(ev, platformWrap, {
-        card: "platform", label: p[2], ac, pct: total ? Math.round(ac / total * 100) : 0
+        card: "platform", key: p[0], label: p[2], ac, pct: total ? Math.round(ac / total * 100) : 0
       });
     };
 
@@ -2027,6 +2046,7 @@ const app = createApp({
       platformWrap,
       miniTip,
       showMiniTip,
+      miniTipClass,
       showStreakTip,
       showPlatformTip,
       streakBarClass,
