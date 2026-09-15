@@ -193,6 +193,26 @@ const app = createApp({
     };
     const hideMiniTip = () => { miniTip.value = null; };
 
+    // 柱体强调：填充深一档 + 浅蓝光晕 + 蓝色柔光。
+    // 注意别用"深色底 + 同色描边"（蓝底画蓝边等于看不见），
+    // 这里用浅色 ring 做出和下方图表一样"被选中"的观感。
+    const BAR_EMPHASIS = "ring-2 ring-blue-400 shadow-[0_0_8px_rgba(37,99,235,0.5)]";
+    const isStreakHovered = (d) => !!(miniTip.value && miniTip.value.card === "streak" && miniTip.value.date === d.date);
+    const isPlatformHovered = (p) => !!(miniTip.value && miniTip.value.card === "platform" && miniTip.value.label === p[2]);
+    const streakBarClass = (d) => {
+      const has = Number(d.solved || 0) > 0;
+      if (isStreakHovered(d)) return (has ? "bg-blue-600 " : "bg-slate-300 ") + BAR_EMPHASIS;
+      return has ? "bg-blue-500/85" : "bg-slate-200";
+    };
+    // p = [平台 key, 简称, 全称, 颜色类, 悬浮色类]。
+    // 悬浮色写成字面量：Tailwind 只扫描源码里出现的完整类名，
+    // 运行时用 replace() 拼出来的类不会被生成（踩过一次）。
+    // 轨道是 overflow-hidden 的，描边/柔光会被裁掉，所以这里改用
+    // "加深 + 加高填满轨道"来表达强调（宽度即数据，保持不动）。
+    const platformSegClass = (p) => {
+      return isPlatformHovered(p) ? p[4] + " h-2.5" : p[3] + " h-1.5";
+    };
+
     // 模板里用的两个薄封装，避免把长参数写在 HTML 里
     const showStreakTip = (ev, d) => showMiniTip(ev, streakWrap, {
       card: "streak", date: d.date, solved: d.solved || 0, subs: d.subs || 0
@@ -2009,6 +2029,8 @@ const app = createApp({
       showMiniTip,
       showStreakTip,
       showPlatformTip,
+      streakBarClass,
+      platformSegClass,
       hideMiniTip,
       weekdayOf,
       settingsTabs,

@@ -177,8 +177,8 @@
                 <div ref="streakWrap" class="relative">
                   <div class="flex items-end gap-1 h-8" @mouseleave="hideMiniTip">
                     <div v-for="d in weekStats.days" :key="d.date"
-                         class="flex-1 rounded-t-[3px] cursor-default"
-                         :class="d.solved ? 'bg-blue-500/85' : 'bg-slate-200'"
+                         class="flex-1 rounded-t-[3px] cursor-default transition-all duration-150"
+                         :class="streakBarClass(d)"
                          :style="{ height: (d.solved ? Math.min(8 + d.solved * 7, 32) : 3) + 'px' }"
                          @mouseenter="showStreakTip($event, d)"
                          @mousemove="showStreakTip($event, d)"></div>
@@ -236,11 +236,11 @@
                 <span class="text-sm text-slate-400">题</span>
               </div>
               <div ref="platformWrap" class="relative mt-3">
-                <div class="h-1.5 rounded-full bg-slate-100 overflow-hidden flex" @mouseleave="hideMiniTip">
-                  <div v-for="p in [['codeforces','CF','Codeforces','bg-blue-500'],['luogu','LG','洛谷','bg-sky-500'],['atcoder','AT','AtCoder','bg-purple-500'],['acwing','AW','AcWing','bg-indigo-500']]"
+                <div class="h-2.5 rounded-full bg-slate-100 overflow-hidden flex items-center" @mouseleave="hideMiniTip">
+                  <div v-for="p in [['codeforces','CF','Codeforces','bg-blue-500','bg-blue-600'],['luogu','LG','洛谷','bg-sky-500','bg-sky-600'],['atcoder','AT','AtCoder','bg-purple-500','bg-purple-600'],['acwing','AW','AcWing','bg-indigo-500','bg-indigo-600']]"
                        :key="p[0]"
-                       :class="p[3]"
-                       class="cursor-default"
+                       :class="platformSegClass(p)"
+                       class="cursor-default transition-all duration-150"
                        :style="{ width: (overview.stats.total_ac ? Math.round((overview.stats.platforms?.[p[0]]?.ac || 0) / overview.stats.total_ac * 100) : 0) + '%' }"
                        @mouseenter="showPlatformTip($event, p)"
                        @mousemove="showPlatformTip($event, p)"></div>
