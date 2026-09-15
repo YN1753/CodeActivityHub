@@ -174,6 +174,45 @@ const app = createApp({
       };
     });
 
+    // --- 迷你条的悬浮浮层 ---
+    // 原生 title 又慢又朴素，这里自绘一个和下方 ECharts tooltip 同规格的白底浮层
+    // （白底 + slate-200 细边 + 圆角 + 阴影 + 等宽小字），hover 体验保持一致。
+    const streakWrap = ref(null);
+    const platformWrap = ref(null);
+    const miniTip = ref(null);
+    const showMiniTip = (ev, wrapRef, payload) => {
+      const wrap = wrapRef && wrapRef.value;
+      if (!wrap) return;
+      const bar = ev.currentTarget.getBoundingClientRect();
+      const box = wrap.getBoundingClientRect();
+      // 浮层水平居中在柱子上，并夹在容器内，避免第一/最后一根柱子把浮层顶出卡片
+      const half = 62;
+      let x = bar.left - box.left + bar.width / 2;
+      x = Math.max(half, Math.min(x, Math.max(half, box.width - half)));
+      miniTip.value = Object.assign({ x, y: bar.top - box.top - 8 }, payload);
+    };
+    const hideMiniTip = () => { miniTip.value = null; };
+
+    // 模板里用的两个薄封装，避免把长参数写在 HTML 里
+    const showStreakTip = (ev, d) => showMiniTip(ev, streakWrap, {
+      card: "streak", date: d.date, solved: d.solved || 0, subs: d.subs || 0
+    });
+    // p = [平台 key, 简称, 全称, 颜色类]
+    const showPlatformTip = (ev, p) => {
+      const ac = Number((overview.value.stats.platforms || {})[p[0]]?.ac || 0);
+      const total = Number(overview.value.stats.total_ac || 0);
+      showMiniTip(ev, platformWrap, {
+        card: "platform", label: p[2], ac, pct: total ? Math.round(ac / total * 100) : 0
+      });
+    };
+
+    // 周几文案与热力图 tooltip 保持一致
+    const weekdayOf = (dateStr) => {
+      const d = new Date(dateStr + "T00:00:00");
+      if (isNaN(d.getTime())) return "";
+      return ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()];
+    };
+
     // 近 7 天汇总：通过题数、提交次数、有产出的天数、单日最好
     const weekStats = computed(() => {
       const days = (overview.value.stats && overview.value.stats.recent_days) || [];
@@ -1964,6 +2003,14 @@ const app = createApp({
       currentTab,
       todayStats,
       weekStats,
+      streakWrap,
+      platformWrap,
+      miniTip,
+      showMiniTip,
+      showStreakTip,
+      showPlatformTip,
+      hideMiniTip,
+      weekdayOf,
       settingsTabs,
       settingsTab,
       addingPlatform,
