@@ -357,6 +357,9 @@ func (a *API) Overview(c *gin.Context) {
 	a.DB.Model(&models.Submission{}).Where("user_id = ? AND verdict = ?", uid, "AC").Select("COUNT(DISTINCT platform || ':' || problem_id)").Scan(&totalAC)
 	a.DB.Model(&models.Submission{}).Where("user_id = ? AND date = ?", uid, today).Count(&todaySubs)
 	a.DB.Model(&models.Submission{}).Where("user_id = ? AND date = ? AND verdict = ?", uid, today, "AC").Select("COUNT(DISTINCT platform || ':' || problem_id)").Scan(&todayAC)
+	// 今天"尝试过"的题目数：只要今天提交过就算（含未通过），用来算当日推进度
+	var todayProblems int64
+	a.DB.Model(&models.Submission{}).Where("user_id = ? AND date = ?", uid, today).Select("COUNT(DISTINCT platform || ':' || problem_id)").Scan(&todayProblems)
 	var rows []platformCount
 	a.DB.Model(&models.Submission{}).Select("platform, COUNT(DISTINCT CASE WHEN verdict = 'AC' THEN problem_id END) AS count").Where("user_id = ?", uid).Group("platform").Scan(&rows)
 	platforms := map[string]gin.H{}
@@ -372,7 +375,39 @@ func (a *API) Overview(c *gin.Context) {
 	if a.DB.Where("user_id = ?", uid).Order("received_at DESC").First(&last).Error == nil {
 		lastTime = last.ReceivedAt
 	}
-	c.JSON(200, gin.H{"stats": gin.H{"total_ac": totalAC, "total_subs": total, "today_ac": todayAC, "today_subs": todaySubs, "streak": a.streak(uid), "platforms": platforms}, "platforms_status": statuses, "last_sync_time": lastTime})
+	c.JSON(200, gin.H{"stats": gin.H{"total_ac": totalAC, "total_subs": total,
+		"today_ac": todayAC, "today_subs": todaySubs, "today_problems": todayProblems,
+		"streak": a.streak(uid), "recent_days": a.recentDays(uid, 7), "platforms": platforms},
+		"platforms_status": statuses, "last_sync_time": lastTime})
+}
+
+// recentDays 返回最近 n 天（含今天，按展示时区）每天的"通过题数"（去重）与提交数。
+// 总览页用它画连续打卡的迷你趋势条，以及"近 7 天"的汇总，避免前端再拉一遍明细。
+func (a *API) recentDays(uid uint, n int) []gin.H {
+	type dayRow struct {
+		Date   string `gorm:"column:date"`
+		Solved int64  `gorm:"column:solved"`
+		Subs   int64  `gorm:"column:subs"`
+	}
+	// 固定长度输出：数据库里没有记录的那天也要补 0，否则前端画不出连续的时间轴
+	start := effectiveDate(time.Now().AddDate(0, 0, -(n - 1)))
+	var rows []dayRow
+	a.DB.Model(&models.Submission{}).
+		Select("date, COUNT(DISTINCT CASE WHEN verdict = 'AC' THEN platform || ':' || problem_id END) AS solved, COUNT(*) AS subs").
+		Where("user_id = ? AND date >= ?", uid, start).
+		Group("date").
+		Scan(&rows)
+	byDate := make(map[string]dayRow, len(rows))
+	for _, r := range rows {
+		byDate[r.Date] = r
+	}
+	out := make([]gin.H, 0, n)
+	for i := 0; i < n; i++ {
+		date := effectiveDate(time.Now().AddDate(0, 0, -(n - 1 - i)))
+		r := byDate[date]
+		out = append(out, gin.H{"date": date, "solved": r.Solved, "subs": r.Subs})
+	}
+	return out
 }
 
 func (a *API) Heatmap(c *gin.Context) {

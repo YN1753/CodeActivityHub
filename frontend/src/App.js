@@ -156,9 +156,36 @@ const app = createApp({
 
     // --- Dashboard & Platform State ---
     const overview = ref({
-      stats: { total_ac: 0, total_subs: 0, today_ac: 0, today_subs: 0, streak: 0, platforms: {} },
+      stats: { total_ac: 0, total_subs: 0, today_ac: 0, today_subs: 0, today_problems: 0, streak: 0, recent_days: [], platforms: {} },
       platforms_status: [],
       last_sync_time: ""
+    });
+
+    // 今日推进度：尝试/通过题数、提交次数、题目通过率（按题目去重算，不是按提交）
+    const todayStats = computed(() => {
+      const s = overview.value.stats || {};
+      const attempted = Number(s.today_problems || 0);
+      const solved = Number(s.today_ac || 0);
+      return {
+        attempted,
+        solved,
+        subs: Number(s.today_subs || 0),
+        rate: attempted ? Math.round((solved / attempted) * 100) : 0
+      };
+    });
+
+    // 近 7 天汇总：通过题数、提交次数、有产出的天数、单日最好
+    const weekStats = computed(() => {
+      const days = (overview.value.stats && overview.value.stats.recent_days) || [];
+      let solved = 0, subs = 0, active = 0, best = 0;
+      days.forEach((d) => {
+        const v = Number(d.solved || 0);
+        solved += v;
+        subs += Number(d.subs || 0);
+        if (v > 0) active += 1;
+        if (v > best) best = v;
+      });
+      return { solved, subs, active, best, days };
     });
 
     const currentTab = ref("overview"); // 'overview', 'submissions', 'mistakes', 'settings'
@@ -935,7 +962,9 @@ const app = createApp({
               total_subs: data.stats.total_subs || 0,
               today_ac: data.stats.today_ac || 0,
               today_subs: data.stats.today_subs || 0,
+              today_problems: data.stats.today_problems || 0,
               streak: data.stats.streak || 0,
+              recent_days: data.stats.recent_days || [],
               platforms: data.stats.platforms || {}
             },
             platforms_status: data.platforms_status || [],
@@ -1933,6 +1962,8 @@ const app = createApp({
       handleLogout,
       handleChangePassword,
       currentTab,
+      todayStats,
+      weekStats,
       settingsTabs,
       settingsTab,
       addingPlatform,

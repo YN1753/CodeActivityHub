@@ -137,34 +137,101 @@
 
         <!-- ============ 数据总览 ============ -->
         <div v-show="currentTab === 'overview'" class="space-y-6">
+          <!-- 顶部四张卡：今日推进度 / 连续打卡（近 7 天趋势条）/ 近 7 天 / 累计通过 -->
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div class="ui-card p-5">
-              <div class="text-xs text-slate-500">通过题目</div>
-              <div class="mt-2 text-3xl font-semibold tabular-nums">{{ overview.stats.total_ac || 0 }}</div>
-              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px] font-mono text-slate-400 flex flex-wrap gap-x-3">
-                <span>CF {{ overview.stats.platforms?.codeforces?.ac || 0 }}</span>
-                <span>LG {{ overview.stats.platforms?.luogu?.ac || 0 }}</span>
-                <span>AT {{ overview.stats.platforms?.atcoder?.ac || 0 }}</span>
-                <span>AW {{ overview.stats.platforms?.acwing?.ac || 0 }}</span>
+            <!-- ① 今日：通过 / 尝试 题数 + 进度条 -->
+            <div class="ui-card p-5 flex flex-col">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-slate-500">今日</span>
+                <span class="text-[11px] text-slate-400">{{ todayStats.attempted ? '已推进 ' + todayStats.rate + '%' : '还没开始' }}</span>
+              </div>
+              <div class="mt-2 flex items-baseline gap-1.5">
+                <span class="text-3xl font-semibold tabular-nums">{{ todayStats.solved }}</span>
+                <span class="text-base text-slate-300">/</span>
+                <span class="text-lg text-slate-500 tabular-nums">{{ todayStats.attempted }}</span>
+                <span class="text-[11px] text-slate-400 ml-0.5">通过 / 尝试</span>
+              </div>
+              <div class="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                <div class="h-full rounded-full bg-blue-500 transition-all duration-500"
+                     :style="{ width: todayStats.rate + '%' }"></div>
+              </div>
+              <div class="mt-auto pt-3 text-[11px] text-slate-400">
+                <span v-if="todayStats.subs">提交 {{ todayStats.subs }} 次</span>
+                <span v-else>今天还没有提交</span>
+                <span v-if="todayStats.attempted > todayStats.solved"> · 还有 {{ todayStats.attempted - todayStats.solved }} 题待攻克</span>
+                <span v-else-if="todayStats.attempted"> · 今日全部通过</span>
               </div>
             </div>
-            <div class="ui-card p-5">
-              <div class="text-xs text-slate-500">今日提交</div>
-              <div class="mt-2 text-3xl font-semibold tabular-nums">{{ overview.stats.today_ac || 0 }}<span class="text-base text-slate-400 font-normal"> / {{ overview.stats.today_subs || 0 }}</span></div>
-              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px]" :class="overview.stats.today_ac > 0 ? 'text-emerald-700' : 'text-slate-400'">
-                {{ overview.stats.today_ac > 0 ? '今天已有题目通过' : '今天还没有通过' }}
+
+            <!-- ② 连续打卡：天数 + 近 7 天迷你趋势条 -->
+            <div class="ui-card p-5 flex flex-col">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-slate-500">连续打卡</span>
+                <span class="text-[11px] text-slate-400">{{ overview.stats.streak > 0 ? '保持中' : '从今天开始' }}</span>
+              </div>
+              <div class="mt-2 flex items-baseline gap-1">
+                <span class="text-3xl font-semibold tabular-nums">{{ overview.stats.streak || 0 }}</span>
+                <span class="text-sm text-slate-400">天</span>
+              </div>
+              <div class="mt-auto pt-3">
+                <div class="flex items-end gap-1 h-8">
+                  <div v-for="d in weekStats.days" :key="d.date"
+                       class="flex-1 rounded-t-[3px]"
+                       :class="d.solved ? 'bg-blue-500/85' : 'bg-slate-200'"
+                       :style="{ height: (d.solved ? Math.min(8 + d.solved * 7, 32) : 3) + 'px' }"
+                       :title="d.date + '：通过 ' + d.solved + ' 题'"></div>
+                </div>
+                <div class="mt-1 flex gap-1">
+                  <span v-for="d in weekStats.days" :key="d.date + '-label'"
+                        class="flex-1 text-center text-[10px] text-slate-400 leading-none">{{ d.date.slice(8) }}</span>
+                </div>
               </div>
             </div>
-            <div class="ui-card p-5">
-              <div class="text-xs text-slate-500">连续打卡</div>
-              <div class="mt-2 text-3xl font-semibold tabular-nums">{{ overview.stats.streak || 0 }}<span class="text-base text-slate-400 font-normal"> 天</span></div>
-              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px] text-slate-400">保持每日做题习惯</div>
+
+            <!-- ③ 近 7 天汇总 -->
+            <div class="ui-card p-5 flex flex-col">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-slate-500">近 7 天</span>
+                <span class="text-[11px] text-slate-400">{{ weekStats.active }} 天有产出</span>
+              </div>
+              <div class="mt-2 flex items-baseline gap-1">
+                <span class="text-3xl font-semibold tabular-nums">{{ weekStats.solved }}</span>
+                <span class="text-sm text-slate-400">题通过</span>
+              </div>
+              <div class="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                <div class="h-full rounded-full bg-blue-500/70 transition-all duration-500"
+                     :style="{ width: (weekStats.days.length ? Math.round(weekStats.active / weekStats.days.length * 100) : 0) + '%' }"></div>
+              </div>
+              <div class="mt-auto pt-3 text-[11px] text-slate-400 flex flex-wrap gap-x-3">
+                <span>提交 {{ weekStats.subs }} 次</span>
+                <span>单日最好 {{ weekStats.best }} 题</span>
+              </div>
             </div>
-            <div class="ui-card p-5">
-              <div class="text-xs text-slate-500">累计提交</div>
-              <div class="mt-2 text-3xl font-semibold tabular-nums">{{ overview.stats.total_subs || 0 }}</div>
-              <div class="mt-3 pt-3 border-t border-slate-100 text-[11px] text-slate-400 truncate" :title="overview.last_sync_time">
-                同步于 {{ overview.last_sync_time || '暂无' }}
+
+            <!-- ④ 累计通过 + 平台分布 -->
+            <div class="ui-card p-5 flex flex-col">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-slate-500">累计通过</span>
+                <span class="text-[11px] text-slate-400 truncate" :title="overview.last_sync_time">
+                  {{ overview.last_sync_time ? '同步 ' + formatTimeAgo(overview.last_sync_time) : '暂无同步' }}
+                </span>
+              </div>
+              <div class="mt-2 flex items-baseline gap-1">
+                <span class="text-3xl font-semibold tabular-nums">{{ overview.stats.total_ac || 0 }}</span>
+                <span class="text-sm text-slate-400">题</span>
+              </div>
+              <div class="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden flex">
+                <div v-for="p in [['codeforces','CF','bg-blue-500'],['luogu','LG','bg-sky-500'],['atcoder','AT','bg-purple-500'],['acwing','AW','bg-indigo-500']]"
+                     :key="p[0]"
+                     :class="p[2]"
+                     :style="{ width: (overview.stats.total_ac ? Math.round((overview.stats.platforms?.[p[0]]?.ac || 0) / overview.stats.total_ac * 100) : 0) + '%' }"
+                     :title="p[1] + ' ' + (overview.stats.platforms?.[p[0]]?.ac || 0) + ' 题'"></div>
+              </div>
+              <div class="mt-auto pt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-mono text-slate-500">
+                <span v-for="p in [['codeforces','CF'],['luogu','LG'],['atcoder','AT'],['acwing','AW']]" :key="p[0]"
+                      class="flex items-center gap-1">
+                  <span :class="['dot', 'dot-' + getStatusClass(p[0])]"></span>{{ p[1] }} {{ overview.stats.platforms?.[p[0]]?.ac || 0 }}
+                </span>
               </div>
             </div>
           </div>
