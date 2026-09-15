@@ -79,14 +79,15 @@ type syncRequest struct {
 	Platform string `json:"platform"`
 }
 type verifyRequest struct {
-	Platform     string `json:"platform"`
-	CFHandle     string `json:"cf_handle"`
-	LuoguUID     string `json:"luogu_uid"`
-	LeetCode     string `json:"leetcode_username"`
-	AtCoder      string `json:"atcoder_handle"`
-	AcWingID     string `json:"acwing_user_id"`
-	LuoguCookie  string `json:"luogu_cookie"`
-	AcWingCookie string `json:"acwing_cookie"`
+	Platform       string `json:"platform"`
+	CFHandle       string `json:"cf_handle"`
+	LuoguUID       string `json:"luogu_uid"`
+	LeetCode       string `json:"leetcode_username"`
+	AtCoder        string `json:"atcoder_handle"`
+	AcWingID       string `json:"acwing_user_id"`
+	LuoguCookie    string `json:"luogu_cookie"`
+	AcWingCookie   string `json:"acwing_cookie"`
+	LeetCodeCookie string `json:"leetcode_cookie"`
 }
 type ingestRequest struct {
 	Platform        string         `json:"platform"`
@@ -583,7 +584,7 @@ func (a *API) GetSettings(c *gin.Context) {
 var allowedSettingKeys = map[string]bool{
 	"cf_handle": true, "luogu_uid": true, "leetcode_username": true,
 	"atcoder_handle": true, "acwing_user_id": true,
-	"luogu_cookie": true, "acwing_cookie": true,
+	"luogu_cookie": true, "acwing_cookie": true, "leetcode_cookie": true,
 }
 
 func (a *API) UpdateSettings(c *gin.Context) {
@@ -637,14 +638,14 @@ func (a *API) loadPlatformConfig(uid uint, platform string) platforms.Config {
 		Platform: platform, CFHandle: values["cf_handle"], LuoguUID: values["luogu_uid"],
 		LeetCode: values["leetcode_username"], AtCoder: values["atcoder_handle"],
 		AcWingID: values["acwing_user_id"], LuoguCookie: values["luogu_cookie"],
-		AcWingCookie: values["acwing_cookie"],
+		AcWingCookie: values["acwing_cookie"], LeetCodeCookie: values["leetcode_cookie"],
 	}
 }
 
 func (a *API) configFromVerify(req verifyRequest) platforms.Config {
 	return platforms.Config{Platform: req.Platform, CFHandle: req.CFHandle, LuoguUID: req.LuoguUID,
 		LeetCode: req.LeetCode, AtCoder: req.AtCoder, AcWingID: req.AcWingID,
-		LuoguCookie: req.LuoguCookie, AcWingCookie: req.AcWingCookie}
+		LuoguCookie: req.LuoguCookie, AcWingCookie: req.AcWingCookie, LeetCodeCookie: req.LeetCodeCookie}
 }
 
 // verifySupported 标出哪些平台能通过公开接口或已配置的 Cookie 完成在线校验。
@@ -926,7 +927,7 @@ var platformMeta = map[string]struct {
 	Label     string
 }{
 	"codeforces": {"cf_handle", "", "Codeforces"},
-	"leetcode":   {"leetcode_username", "", "LeetCode"},
+	"leetcode":   {"leetcode_username", "leetcode_cookie", "LeetCode"},
 	"atcoder":    {"atcoder_handle", "", "AtCoder"},
 	"luogu":      {"luogu_uid", "luogu_cookie", "洛谷"},
 	"acwing":     {"acwing_user_id", "acwing_cookie", "AcWing"},
@@ -1058,7 +1059,7 @@ func (a *API) CreateAccount(c *gin.Context) {
 func (a *API) verifyAccountRow(acc *models.PlatformAccount) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	cfg := platforms.Config{Platform: acc.Platform, CFHandle: acc.Handle, LuoguUID: acc.Handle, LeetCode: acc.Handle, AtCoder: acc.Handle, AcWingID: acc.Handle, LuoguCookie: acc.Cookie, AcWingCookie: acc.Cookie}
+	cfg := platforms.Config{Platform: acc.Platform, CFHandle: acc.Handle, LuoguUID: acc.Handle, LeetCode: acc.Handle, AtCoder: acc.Handle, AcWingID: acc.Handle, LuoguCookie: acc.Cookie, AcWingCookie: acc.Cookie, LeetCodeCookie: acc.Cookie}
 	profile, err := a.platformClient().Verify(ctx, cfg)
 	if err != nil {
 		if errors.Is(err, platforms.ErrUnsupportedVerify) {

@@ -27,6 +27,10 @@ type Config struct {
 	AcWingID     string
 	LuoguCookie  string // kept for user-controlled authenticated requests only
 	AcWingCookie string
+	// LeetCodeCookie 是浏览器里复制来的整段 cookie（含 LEETCODE_SESSION）。
+	// 力扣的提交流水接口只在登录态下返回数据，所以历史同步依赖它；
+	// 不填也能用公开接口，但只能拿到最近 AC（国际站）或拿不到（中国站）。
+	LeetCodeCookie string
 }
 
 type Submission struct {
@@ -287,7 +291,7 @@ func (c *Client) SyncSubmissions(ctx context.Context, cfg Config) (SyncResult, e
 	case "codeforces":
 		return c.syncCodeforces(ctx, cfg.CFHandle)
 	case "leetcode":
-		return c.syncLeetCode(ctx, cfg.LeetCode)
+		return c.syncLeetCode(ctx, cfg.LeetCode, cfg.LeetCodeCookie)
 	case "atcoder":
 		return c.syncAtCoder(ctx, cfg.AtCoder)
 	case "luogu":
@@ -462,7 +466,14 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 	return json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(out)
 }
 
+// postGraphQL 是匿名的 GraphQL 请求（公开接口够用时走这里）。
 func (c *Client) postGraphQL(ctx context.Context, endpoint, query string, variables map[string]any, out any) error {
+	return c.postGraphQLWithCookie(ctx, endpoint, query, variables, "", out)
+}
+
+// postGraphQLWithCookie 支持带上浏览器里的登录 cookie：力扣的提交流水只在登录态下返回数据，
+// 且官方要求 X-CSRFToken 与 cookie 里的 csrftoken 一致（与浏览器行为对齐）。
+func (c *Client) postGraphQLWithCookie(ctx context.Context, endpoint, query string, variables map[string]any, cookie string, out any) error {
 	if err := c.waitForSlot(ctx, endpoint); err != nil {
 		return err
 	}
@@ -474,9 +485,16 @@ func (c *Client) postGraphQL(ctx context.Context, endpoint, query string, variab
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "CodeActivityHub/1.0")
-	// 力扣（尤其中国站）会校验来源，缺 Referer 容易被挡
+	// 力扣（尤其中国站）会校验来源，缺 Referer/Origin 容易被挡
 	if u, perr := url.Parse(endpoint); perr == nil && u.Scheme != "" && u.Host != "" {
 		req.Header.Set("Referer", u.Scheme+"://"+u.Host+"/")
+		req.Header.Set("Origin", u.Scheme+"://"+u.Host)
+	}
+	if cookieHeader := leetCodeCookieHeader(cookie); cookieHeader != "" {
+		req.Header.Set("Cookie", cookieHeader)
+		if token := leetCodeCSRFToken(cookieHeader); token != "" {
+			req.Header.Set("X-CSRFToken", token)
+		}
 	}
 	res, err := c.HTTP.Do(req)
 	if err != nil {
@@ -731,17 +749,196 @@ func leetCodeSiteOf(p Profile) (graphqlEP, webBase string) {
 	return "https://leetcode.com/graphql", "https://leetcode.com"
 }
 
-func (c *Client) syncLeetCode(ctx context.Context, username string) (SyncResult, error) {
+// leetCodeSubmissionItem 是"提交流水"与"最近 AC"两个接口的公共形态。
+type leetCodeSubmissionItem struct {
+	ID        string
+	Title     string
+	Slug      string
+	URL       string
+	Timestamp string
+	Lang      string
+	Status    string
+	Pending   bool
+}
+
+// leetCodeCookieHeader 把账号里填的内容转成可发送的 Cookie 头：
+// 整段 cookie（含 "="）原样使用；只填了会话值则补成 LEETCODE_SESSION=<值>。
+func leetCodeCookieHeader(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, "=") {
+		return s
+	}
+	return "LEETCODE_SESSION=" + s
+}
+
+// leetCodeCSRFToken 从整段 cookie 里取 csrftoken：力扣要求 X-CSRFToken 与它一致。
+func leetCodeCSRFToken(cookieHeader string) string {
+	for _, part := range strings.Split(cookieHeader, ";") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) == 2 && strings.EqualFold(strings.TrimSpace(kv[0]), "csrftoken") {
+			return strings.TrimSpace(kv[1])
+		}
+	}
+	return ""
+}
+
+// leetCodeSubmissionList 拉取登录用户的提交流水（含未通过，错题本/热力图才算完整）。
+// 国际站与中国站同名接口 submissionList，但节点字段不同（2026-09 实测）：
+//
+//	国际站 SubmissionDumpNode 有 titleSlug；中国站的没有 titleSlug，只能拿 title 与 url。
+//
+// 翻页用响应里的 lastKey；单页最多 20 条，这里最多翻 40 页（约 800 条）。
+func (c *Client) leetCodeSubmissionList(ctx context.Context, graphqlEP, cookie string) ([]leetCodeSubmissionItem, error) {
+	withSlug := !strings.Contains(graphqlEP, "leetcode.cn")
+	q := `query($offset:Int!,$limit:Int!,$lastKey:String,$questionSlug:String){ submissionList(offset:$offset,limit:$limit,lastKey:$lastKey,questionSlug:$questionSlug){ lastKey hasNext submissions{ id title url timestamp lang statusDisplay isPending } } }`
+	if withSlug {
+		q = `query($offset:Int!,$limit:Int!,$lastKey:String,$questionSlug:String){ submissionList(offset:$offset,limit:$limit,lastKey:$lastKey,questionSlug:$questionSlug){ lastKey hasNext submissions{ id title titleSlug url timestamp lang statusDisplay isPending } } }`
+	}
+	const pageSize = 20
+	const maxPages = 40
+	items := make([]leetCodeSubmissionItem, 0, pageSize*4)
+	lastKey := ""
+	for page := 0; page < maxPages; page++ {
+		if err := ctx.Err(); err != nil {
+			return items, nil
+		}
+		var out struct {
+			List struct {
+				LastKey     string `json:"lastKey"`
+				HasNext     bool   `json:"hasNext"`
+				Submissions []struct {
+					ID        string `json:"id"`
+					Title     string `json:"title"`
+					Slug      string `json:"titleSlug"`
+					URL       string `json:"url"`
+					Timestamp string `json:"timestamp"`
+					Lang      string `json:"lang"`
+					Status    string `json:"statusDisplay"`
+					Pending   bool   `json:"isPending"`
+				} `json:"submissions"`
+			} `json:"submissionList"`
+		}
+		if err := c.postGraphQLWithCookie(ctx, graphqlEP, q, map[string]any{
+			"offset": page * pageSize, "limit": pageSize, "lastKey": lastKey, "questionSlug": "",
+		}, cookie, &out); err != nil {
+			return nil, err
+		}
+		if len(out.List.Submissions) == 0 {
+			break
+		}
+		for _, x := range out.List.Submissions {
+			items = append(items, leetCodeSubmissionItem{ID: x.ID, Title: x.Title, Slug: x.Slug, URL: x.URL,
+				Timestamp: x.Timestamp, Lang: x.Lang, Status: x.Status, Pending: x.Pending})
+		}
+		if !out.List.HasNext || out.List.LastKey == "" {
+			break
+		}
+		lastKey = out.List.LastKey
+	}
+	return items, nil
+}
+
+// leetCodeProblemSlugRe 从提交记录自带的 url 里抠出题目 slug（中国站流水没有 slug 字段）。
+var leetCodeProblemSlugRe = regexp.MustCompile(`/problems/([^/?#]+)`)
+
+// leetCodeRowURL 组装可点击的链接：优先用接口给的 url（相对路径补上站点），
+// 其次用 slug 拼题目页，最后退回题干为空（不编造链接）。
+func leetCodeRowURL(webBase, rawURL, slug string) string {
+	if raw := strings.TrimSpace(rawURL); raw != "" {
+		if strings.HasPrefix(raw, "http") {
+			return raw
+		}
+		if strings.HasPrefix(raw, "/") {
+			return webBase + raw
+		}
+	}
+	if slug != "" {
+		return webBase + "/problems/" + slug + "/"
+	}
+	return ""
+}
+
+// leetCodeSubmissionsToRows 映射成统一结构。
+// 题号优先用题库同款的前端题号；中国站流水不含 slug，改用 url 反推，再不行退回题名——
+// 至少保证"同一道题"的记录能按同一个键聚起来（去重/统计不会散）。
+func (c *Client) leetCodeSubmissionsToRows(ctx context.Context, graphqlEP, webBase string, items []leetCodeSubmissionItem) []Submission {
+	// slug 缺失时先从自带 url 里抠
+	for i := range items {
+		if items[i].Slug == "" && items[i].URL != "" {
+			if m := leetCodeProblemSlugRe.FindStringSubmatch(items[i].URL); m != nil {
+				items[i].Slug = m[1]
+			}
+		}
+	}
+	slugs := make([]string, 0, len(items))
+	seen := make(map[string]bool, len(items))
+	for _, x := range items {
+		if x.Slug != "" && !seen[x.Slug] {
+			seen[x.Slug] = true
+			slugs = append(slugs, x.Slug)
+		}
+	}
+	if len(slugs) > leetCodeSlugResolveLimit {
+		slugs = slugs[:leetCodeSlugResolveLimit]
+	}
+	frontendIDs := c.leetCodeFrontendIDs(ctx, graphqlEP, slugs)
+
+	rows := make([]Submission, 0, len(items))
+	for _, x := range items {
+		// 判题中的先不写：错题本规则是"非 AC 即错题"，半成品会污染数据
+		if x.Pending {
+			continue
+		}
+		ts, _ := strconv.ParseInt(x.Timestamp, 10, 64)
+		if ts <= 0 {
+			continue
+		}
+		pid := x.Slug
+		if v, ok := frontendIDs[x.Slug]; ok && v != "" {
+			pid = v
+		}
+		if pid == "" {
+			pid = x.Title
+		}
+		if pid == "" {
+			continue
+		}
+		rows = append(rows, Submission{RawID: x.ID, ProblemID: pid, ProblemTitle: x.Title,
+			Verdict: x.Status, SubmittedAt: time.Unix(ts, 0),
+			URL: leetCodeRowURL(webBase, x.URL, x.Slug), Language: x.Lang})
+	}
+	return rows
+}
+
+func (c *Client) syncLeetCode(ctx context.Context, username, cookie string) (SyncResult, error) {
 	profile, err := c.verifyLeetCode(ctx, username)
 	if err != nil {
 		return SyncResult{}, err
 	}
-	graphqlEP, _ := leetCodeSiteOf(profile)
-	// 力扣中国站没有公开的提交记录接口（recentAcSubmissionList / submissions 等都不存在，
-	// 2026-09 实测），提交记录依赖浏览器脚本上报（脚本 @match 已覆盖 leetcode.cn）。
+	graphqlEP, webBase := leetCodeSiteOf(profile)
+
+	// 有登录 Cookie：走提交流水接口，拿到全部状态（不只是 AC）。这是"服务端直接去网站同步"的正路。
+	if strings.TrimSpace(cookie) != "" {
+		items, err := c.leetCodeSubmissionList(ctx, graphqlEP, cookie)
+		if err != nil {
+			return SyncResult{}, err
+		}
+		if len(items) == 0 {
+			return SyncResult{Platform: "leetcode", Profile: profile,
+				Message: "提交流水为空：请确认 Cookie 未过期（重新登录力扣后复制一次整段 cookie）"}, nil
+		}
+		rows := c.leetCodeSubmissionsToRows(ctx, graphqlEP, webBase, items)
+		return SyncResult{Platform: "leetcode", Profile: profile, Submissions: rows,
+			Message: fmt.Sprintf("从 LeetCode 获取 %d 条提交记录（含未通过）", len(rows))}, nil
+	}
+
+	// 没 Cookie：中国站的流水接口不返回数据，国际站退回到公开的"最近 AC"接口。
 	if strings.Contains(graphqlEP, "leetcode.cn") {
 		return SyncResult{Platform: "leetcode", Profile: profile,
-			Message: "力扣中国站不提供公开的提交记录接口，提交记录请使用篡改猴脚本接入（已支持）"}, nil
+			Message: "力扣中国站的提交流水需要登录 Cookie：在账号里粘一次整段 cookie 即可同步历史（也可以让浏览器脚本实时推送）"}, nil
 	}
 	const q = `query($username:String!,$limit:Int!){ recentAcSubmissionList(username:$username,limit:$limit){ id title titleSlug timestamp lang statusDisplay } }`
 	var out struct {
@@ -757,30 +954,14 @@ func (c *Client) syncLeetCode(ctx context.Context, username string) (SyncResult,
 	if err := c.postGraphQL(ctx, graphqlEP, q, map[string]any{"username": username, "limit": 1000}, &out); err != nil {
 		return SyncResult{}, err
 	}
-	// 提交接口只给 titleSlug，先批量换成题号，与题库表（题号）保持一致
-	slugs := make([]string, 0, len(out.Rows))
-	seen := make(map[string]bool, len(out.Rows))
+	items := make([]leetCodeSubmissionItem, 0, len(out.Rows))
 	for _, x := range out.Rows {
-		if x.Slug != "" && !seen[x.Slug] {
-			seen[x.Slug] = true
-			slugs = append(slugs, x.Slug)
-		}
+		items = append(items, leetCodeSubmissionItem{ID: x.ID, Title: x.Title, Slug: x.Slug,
+			Timestamp: x.Timestamp, Lang: x.Lang, Status: x.Status})
 	}
-	if len(slugs) > leetCodeSlugResolveLimit {
-		slugs = slugs[:leetCodeSlugResolveLimit]
-	}
-	frontendIDs := c.leetCodeFrontendIDs(ctx, slugs)
-
-	rows := make([]Submission, 0, len(out.Rows))
-	for _, x := range out.Rows {
-		ts, _ := strconv.ParseInt(x.Timestamp, 10, 64)
-		pid := x.Slug
-		if v, ok := frontendIDs[x.Slug]; ok && v != "" {
-			pid = v
-		}
-		rows = append(rows, Submission{RawID: x.ID, ProblemID: pid, ProblemTitle: x.Title, Verdict: "AC", SubmittedAt: time.Unix(ts, 0), URL: "https://leetcode.com/problems/" + x.Slug + "/", Language: x.Lang})
-	}
-	return SyncResult{Platform: "leetcode", Profile: profile, Submissions: rows, Message: fmt.Sprintf("从 LeetCode 获取 %d 条已通过提交", len(rows))}, nil
+	rows := c.leetCodeSubmissionsToRows(ctx, graphqlEP, webBase, items)
+	return SyncResult{Platform: "leetcode", Profile: profile, Submissions: rows,
+		Message: fmt.Sprintf("从 LeetCode 获取 %d 条已通过提交（未配置 Cookie，拿不到未通过的记录）", len(rows))}, nil
 }
 
 // 单次同步最多解析多少个 slug：受 800ms 节流限制，每 25 个一次请求，
@@ -791,7 +972,7 @@ const leetCodeSlugResolveLimit = 300
 // 题库表存的就是题号，提交记录统一成题号后两边才能对上：看板显示 "1. Two Sum"
 // 而不是英文 slug，用户体验与"题号"直觉一致。
 // 用 GraphQL 别名批量查询（一次 25 个）；拿不到的保持 slug 兜底，不让同步失败。
-func (c *Client) leetCodeFrontendIDs(ctx context.Context, slugs []string) map[string]string {
+func (c *Client) leetCodeFrontendIDs(ctx context.Context, graphqlEP string, slugs []string) map[string]string {
 	result := make(map[string]string, len(slugs))
 	const perBatch = 25
 	for i := 0; i < len(slugs); i += perBatch {
@@ -811,7 +992,7 @@ func (c *Client) leetCodeFrontendIDs(ctx context.Context, slugs []string) map[st
 		var out map[string]struct {
 			FrontendID string `json:"questionFrontendId"`
 		}
-		if err := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{}, &out); err != nil {
+		if err := c.postGraphQL(ctx, graphqlEP, q, map[string]any{}, &out); err != nil {
 			// 整批失败就用 slug 兜底，不影响主流程
 			continue
 		}
