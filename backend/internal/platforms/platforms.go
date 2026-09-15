@@ -652,7 +652,9 @@ func (c *Client) verifyLeetCode(ctx context.Context, username string) (Profile, 
 	if strings.TrimSpace(username) == "" {
 		return Profile{}, fmt.Errorf("LeetCode 用户名不能为空")
 	}
-	const q = `query($username:String!){ userPublicProfile(username:$username){ username profile{ranking} submitStatsGlobal{acSubmissionNum{difficulty count}} } }`
+	// 注意：LeetCode 已移除 userPublicProfile 字段（2026-09 实测返回 400），
+	// 现用 matchedUser + submitStats；用户名不存在时 matchedUser 为 null。
+	const q = `query($username:String!){ matchedUser(username:$username){ username profile{ranking} submitStats{acSubmissionNum{difficulty count}} } }`
 	var out struct {
 		User struct {
 			Username string `json:"username"`
@@ -664,8 +666,8 @@ func (c *Client) verifyLeetCode(ctx context.Context, username string) (Profile, 
 					Difficulty string `json:"difficulty"`
 					Count      int    `json:"count"`
 				} `json:"acSubmissionNum"`
-			} `json:"submitStatsGlobal"`
-		} `json:"userPublicProfile"`
+			} `json:"submitStats"`
+		} `json:"matchedUser"`
 	}
 	if err := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{"username": username}, &out); err != nil {
 		return Profile{}, err
@@ -769,10 +771,12 @@ func (c *Client) leetCodeFrontendIDs(ctx context.Context, slugs []string) map[st
 }
 
 func (c *Client) leetCodeProblems(ctx context.Context, page, limit int) ([]Problem, int, error) {
-	const q = `query($skip:Int!,$limit:Int!){ problemsetQuestionList(categorySlug:"",skip:$skip,limit:$limit,filters:{}){total questions{questionFrontendId title titleSlug difficulty topicTags{name}}} }`
+	// 注意：problemsetQuestionList 已被 LeetCode 移除（2026-09 实测报错），
+	// 改用 problemsetQuestionListV2；它没有 total 字段，总数在 totalLength。
+	const q = `query($skip:Int!,$limit:Int!){ problemsetQuestionListV2(skip:$skip,limit:$limit){ questions{questionFrontendId title titleSlug difficulty topicTags{name}} totalLength hasMore } }`
 	var out struct {
 		List struct {
-			Total     int `json:"total"`
+			Total     int `json:"totalLength"`
 			Questions []struct {
 				FrontendID string                  `json:"questionFrontendId"`
 				Title      string                  `json:"title"`
@@ -780,7 +784,7 @@ func (c *Client) leetCodeProblems(ctx context.Context, page, limit int) ([]Probl
 				Difficulty string                  `json:"difficulty"`
 				Tags       []struct{ Name string } `json:"topicTags"`
 			} `json:"questions"`
-		} `json:"problemsetQuestionList"`
+		} `json:"problemsetQuestionListV2"`
 	}
 	if err := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{"skip": (page - 1) * limit, "limit": limit}, &out); err != nil {
 		return nil, 0, err
@@ -928,6 +932,10 @@ var ErrUnsupportedVerify = errors.New("该平台没有公开校验接口")
 
 const luoguOrigin = "https://www.luogu.com.cn"
 
+// luoguMaxPages 同步提交时单轮最多翻多少页（上限，防止一次拉爆；695 条约需 35 页）。
+// 设为包级变量是为了让临时实时测试能临时调小以控制请求数，正常同步不受影响。
+var luoguMaxPages = 40
+
 // cookiePairPattern 匹配 "名字=值" 形态的 cookie 片段（用于识别用户是不是整段粘贴的）。
 var cookiePairPattern = regexp.MustCompile(`^\s*(?:__client_id|_uid|C3VK|__cf_bm)\s*=`)
 
@@ -957,9 +965,79 @@ func logLuoguAuthHint(endpoint, cookieHeader, upstreamMessage string) {
 	fmt.Printf("[luogu] %s 认证失败：%s（已发送 Cookie 摘要 %s，总长度 %d）\n", endpoint, upstreamMessage, luoguCookieSummary(cookieHeader), len(cookieHeader))
 }
 
-// luoguData 取洛谷页面并解析 <script id="lentille-context"> 里的 data 对象。
-// 注意洛谷对"找不到用户"这类业务错误会用 404 状态码返回同样的 JSON，
-// 所以不能只看状态码，要把 body 交给调用方按 errorCode 判断。
+// luoguContext 从洛谷响应体里解析内嵌数据。洛谷 2026-09 改版为 columba/lentille
+// 架构后，数据内嵌在 <script id="lentille-context" type="application/json"> 中
+// （SPA 骨架 HTML 本身 HTTP 200，但旧版 ?_contentOnly=1 的纯 JSON 接口已废弃）。
+// 本函数优先提取该 script；若响应本身就是一个 JSON 对象（老版本/接口兼容），
+// 也直接解析；两者都失败再区分"疑似反爬拦截"还是"页面已改版"给出清晰报错。
+//
+// 返回的是完整"信封"（含 template / data / errorCode 等顶层字段），调用方再按需
+// 用 luoguDataOf 取出 data 业务对象。
+func luoguContext(raw []byte) (map[string]any, error) {
+	s := string(raw)
+	const begin = `<script id="lentille-context" type="application/json">`
+	if start := strings.Index(s, begin); start >= 0 {
+		start += len(begin)
+		rest := s[start:]
+		if end := strings.Index(rest, `</script>`); end >= 0 {
+			var env map[string]any
+			if err := json.Unmarshal([]byte(rest[:end]), &env); err == nil {
+				return env, nil
+			}
+		}
+	}
+	// 整个响应就是 JSON（老版本行为）：直接解析。
+	var env map[string]any
+	if err := json.Unmarshal(raw, &env); err == nil {
+		return env, nil
+	}
+	// 两者都失败：区分"疑似反爬拦截（有 HTML 骨架但没数据）"和"页面已改版"。
+	if strings.Contains(s, "<!DOCTYPE") || strings.Contains(s, "<html") {
+		return nil, fmt.Errorf("洛谷页面未内嵌数据（疑似反爬拦截，需带上挑战 Cookie 重发）")
+	}
+	return nil, fmt.Errorf("洛谷响应既不是内嵌 JSON 也不是合法 JSON（页面可能已改版）")
+}
+
+// luoguDataOf 从信封里取出 data 业务对象；缺失返回 (nil, false)。
+func luoguDataOf(env map[string]any) (map[string]any, bool) {
+	d, ok := env["data"].(map[string]any)
+	return d, ok && d != nil
+}
+
+// luoguUserOf 取出页面级 user 对象：新版放在 data.user，老版本可能直接放信封顶层，
+// 两处都找，避免因为嵌套位置变化导致误判"用户不存在"。
+func luoguUserOf(env map[string]any) (map[string]any, bool) {
+	if d, ok := luoguDataOf(env); ok {
+		if u, ok := d["user"].(map[string]any); ok {
+			return u, true
+		}
+	}
+	if u, ok := env["user"].(map[string]any); ok {
+		return u, true
+	}
+	return nil, false
+}
+
+// luoguEnvelopeOK 统一判断洛谷信封是否成功：
+//   - 老版本（columba）带显式 errorCode：非 0 视为业务错误；
+//   - 新版本（lentille）已无 errorCode，只要 data 存在且非空即视为成功。
+func luoguEnvelopeOK(env map[string]any) error {
+	if code, ok := luoguErrorCode(env); ok {
+		if code != 0 {
+			return fmt.Errorf("洛谷：%s", luoguString(env["errorMessage"]))
+		}
+		return nil
+	}
+	if _, ok := luoguDataOf(env); ok {
+		return nil
+	}
+	return fmt.Errorf("洛谷：响应缺少 data（可能为反爬拦截或页面已改版）")
+}
+
+// luoguData 取洛谷页面并解析内嵌的 columba/lentille 数据信封（envelope）。
+// 信封包含 template / data / errorCode(老版本) 等字段；data 才是真实业务数据。
+// 注意洛谷对"找不到用户"这类业务错误可能用 404 返回同样的信封，
+// 所以不能只看状态码，要交给调用方按 luoguEnvelopeOK 判断。
 func (c *Client) luoguData(ctx context.Context, path, luoguCookie string) (map[string]any, error) {
 	return c.luoguDataWithHeader(ctx, path, luoguCookieHeader(luoguCookie))
 }
@@ -969,26 +1047,14 @@ func (c *Client) luoguDataWithHeader(ctx context.Context, path, cookieHeader str
 	if err != nil {
 		return nil, err
 	}
-	const begin = `<script id="lentille-context" type="application/json">`
-	start := strings.Index(body, begin)
-	if start < 0 {
+	env, err := luoguContext([]byte(body))
+	if err != nil {
 		if status != http.StatusOK {
-			return nil, fmt.Errorf("洛谷响应 %d", status)
+			return nil, fmt.Errorf("%w（HTTP %d）", err, status)
 		}
-		return nil, fmt.Errorf("洛谷页面里没有找到数据（可能被反爬拦截或需要登录）")
+		return nil, err
 	}
-	start += len(begin)
-	end := strings.Index(body[start:], `</script>`)
-	if end < 0 {
-		return nil, fmt.Errorf("洛谷页面结构异常")
-	}
-	var envelope struct {
-		Data map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(body[start:start+end]), &envelope); err != nil {
-		return nil, fmt.Errorf("洛谷数据解析失败: %w", err)
-	}
-	return envelope.Data, nil
+	return env, nil
 }
 
 // mergeCookieHeader 把挑战下发的 cookie 片段合并进已有 Cookie 头，同名 cookie 取最新值，
@@ -1107,11 +1173,10 @@ func luoguInt(v any) int {
 	return 0
 }
 
-// luoguErrorCode 读取洛谷响应里的 errorCode，并返回它“是否存在”。
-// 洛谷正常成功响应一定显式带 "errorCode":0；若字段缺失，说明拿到的是反爬/错误页，
-// 不能当成 success（否则下游会静默返回 0 条）。
-func luoguErrorCode(data map[string]any) (int, bool) {
-	v, ok := data["errorCode"]
+// luoguErrorCode 读取洛谷信封顶层的 errorCode（老版本 columba 字段）。
+// 新版本（lentille）已无此字段，调用方改用 luoguEnvelopeOK 统一判断成功与否。
+func luoguErrorCode(env map[string]any) (int, bool) {
+	v, ok := env["errorCode"]
 	if !ok {
 		return 0, false
 	}
@@ -1197,23 +1262,23 @@ func (c *Client) luoguAuthedCookie(ctx context.Context, uid, cookie string) (str
 	}
 	attempts = append(attempts, attempt{"仅 __client_id", base})
 
-	path := "/record/list?user=" + url.QueryEscape(uid) + "&page=1&_contentOnly=1"
+	path := "/record/list?user=" + url.QueryEscape(uid) + "&page=1"
 	reasons := make([]string, 0, len(attempts))
 	for _, at := range attempts {
-		data, err := c.luoguDataWithHeader(ctx, path, at.header)
+		env, err := c.luoguDataWithHeader(ctx, path, at.header)
 		if err != nil {
 			reasons = append(reasons, at.label+"："+err.Error())
 			continue
 		}
-		if code, present := luoguErrorCode(data); !present {
-			// errorCode 缺失：不是正常成功响应（通常是反爬/错误页），视为失败。
-			logLuoguAuthHint("/record/list "+at.label, at.header, "响应缺少 errorCode")
-			reasons = append(reasons, at.label+"：响应缺少 errorCode（可能为反爬拦截或错误页）")
+		if err := luoguEnvelopeOK(env); err != nil {
+			logLuoguAuthHint("/record/list "+at.label, at.header, err.Error())
+			reasons = append(reasons, at.label+"："+err.Error())
 			continue
-		} else if code != 0 {
-			upstream := luoguString(data["errorMessage"])
-			logLuoguAuthHint("/record/list "+at.label, at.header, upstream)
-			reasons = append(reasons, fmt.Sprintf("%s：洛谷返回 %d %s", at.label, code, upstream))
+		}
+		// 新版本以能否拿到 user 为成功标志：记录列表页的 user 即 ?user=uid 对应用户，
+		// 能取到说明页面正常返回、未命中反爬/未授权拦截。不再看已废弃的 errorCode。
+		if _, ok := luoguUserOf(env); !ok {
+			reasons = append(reasons, at.label+"：响应缺少 user（可能为反爬拦截或凭证无效）")
 			continue
 		}
 		return at.header, "凭证有效，历史同步可用（" + at.label + "）"
@@ -1224,17 +1289,15 @@ func (c *Client) luoguAuthedCookie(ctx context.Context, uid, cookie string) (str
 
 // luoguProfile 只用公开用户主页取昵称/题数/排名（1 次请求）。
 func (c *Client) luoguProfile(ctx context.Context, uid string) (Profile, error) {
-	data, err := c.luoguData(ctx, "/user/"+url.PathEscape(uid)+"?_contentOnly=1", "")
+	env, err := c.luoguData(ctx, "/user/"+url.PathEscape(uid), "")
 	if err != nil {
 		return Profile{}, err
 	}
-	if code, present := luoguErrorCode(data); !present {
-		return Profile{}, fmt.Errorf("洛谷：响应缺少 errorCode（可能为反爬拦截或错误页）")
-	} else if code != 0 {
-		return Profile{}, fmt.Errorf("洛谷：%s", luoguString(data["errorMessage"]))
+	if err := luoguEnvelopeOK(env); err != nil {
+		return Profile{}, err
 	}
-	user, _ := data["user"].(map[string]any)
-	if user == nil {
+	user, ok := luoguUserOf(env)
+	if !ok {
 		return Profile{}, fmt.Errorf("洛谷用户 %s 不存在或主页不可见", uid)
 	}
 	profile := Profile{Platform: "luogu", Handle: luoguString(user["name"]), Solved: luoguInt(user["passedProblemCount"])}
@@ -1309,7 +1372,6 @@ func (c *Client) syncLuogu(ctx context.Context, cfg Config) (SyncResult, error) 
 	// 洛谷记录每页 20 条（不是固定 50），perPage 要从响应里读，
 	// 否则"本页不足一页"的判断永远成立，只会拉到第一页。
 	const fallbackPerPage = 20
-	const maxPages = 40 // 上限，防止一次拉爆；695 条约需 35 页
 	perPage := fallbackPerPage
 	total := 0
 	rows := make([]Submission, 0, fallbackPerPage)
@@ -1317,21 +1379,19 @@ func (c *Client) syncLuogu(ctx context.Context, cfg Config) (SyncResult, error) 
 	// 记录遇到但认不出来的状态码：洛谷的状态枚举随版本变化，
 	// 把出现过的码回报出去，才能据此补映射（而不是默默丢掉记录）。
 	unknown := map[int]int{}
-	for page := 1; page <= maxPages; page++ {
-		data, err := c.luoguDataWithHeader(ctx, fmt.Sprintf("/record/list?user=%s&page=%d&_contentOnly=1", url.QueryEscape(uid), page), cookieHeader)
+	for page := 1; page <= luoguMaxPages; page++ {
+		env, err := c.luoguDataWithHeader(ctx, fmt.Sprintf("/record/list?user=%s&page=%d", url.QueryEscape(uid), page), cookieHeader)
 		if err != nil {
 			return SyncResult{}, err
 		}
-		if code, present := luoguErrorCode(data); !present {
-			// errorCode 缺失应当作失败而不是静默当成成功，否则会拿到空列表后
-			// 直接 break，静默返回 0 条记录。
-			logLuoguAuthHint("/record/list page="+strconv.Itoa(page), cookieHeader, "响应缺少 errorCode")
-			return SyncResult{}, fmt.Errorf("洛谷返回异常（缺少 errorCode，可能被反爬拦截）")
-		} else if code != 0 {
-			upstream := luoguString(data["errorMessage"])
-			logLuoguAuthHint("/record/list page="+strconv.Itoa(page), cookieHeader, upstream)
-			return SyncResult{}, fmt.Errorf("洛谷返回 %d %s", code, upstream)
+		if err := luoguEnvelopeOK(env); err != nil {
+			// 缺 data / errorCode 非 0：当成失败而不是静默当成成功（否则会拿到
+			// 空列表后直接 break，静默返回 0 条记录）。网络类错误已在 luoguGetText
+			// 层按项目约定只记 warning，这里只负责业务层判定。
+			logLuoguAuthHint("/record/list page="+strconv.Itoa(page), cookieHeader, err.Error())
+			return SyncResult{}, err
 		}
+		data, _ := luoguDataOf(env)
 		if holder, ok := data["records"].(map[string]any); ok {
 			if v := luoguInt(holder["perPage"]); v > 0 {
 				perPage = v
@@ -1455,14 +1515,19 @@ func (c *Client) luoguProblemMeta(ctx context.Context) (perPage, total int, err 
 		return pp, t, nil
 	}
 	c.luoguMetaMu.Unlock()
-	data, err := c.luoguData(ctx, "/problem/list?page=1&_contentOnly=1", "")
+	env, err := c.luoguData(ctx, "/problem/list?page=1", "")
 	if err != nil {
 		return 0, 0, err
+	}
+	data, _ := luoguDataOf(env)
+	if data == nil {
+		return 0, 0, fmt.Errorf("洛谷题库响应中没有找到公开数据")
 	}
 	block, _ := data["problems"].(map[string]any)
 	if block == nil {
 		return 0, 0, fmt.Errorf("洛谷题库响应中没有找到公开数据")
 	}
+	// 题库页 perPage/count 在服务端是字符串（"50"/"17502"），luoguInt 已兼容。
 	perPage = luoguInt(block["perPage"])
 	total = luoguInt(block["count"])
 	if perPage <= 0 {
@@ -1491,9 +1556,13 @@ func (c *Client) luoguProblems(ctx context.Context, page, limit int) ([]Problem,
 		globalOffset = (page - 1) * limit
 	}
 	luoguPage := globalOffset/perPage + 1
-	data, err := c.luoguData(ctx, fmt.Sprintf("/problem/list?page=%d&_contentOnly=1", luoguPage), "")
+	env, err := c.luoguData(ctx, fmt.Sprintf("/problem/list?page=%d", luoguPage), "")
 	if err != nil {
 		return nil, 0, err
+	}
+	data, _ := luoguDataOf(env)
+	if data == nil {
+		return nil, 0, fmt.Errorf("洛谷题库响应中没有找到公开数据")
 	}
 	problemBlock, _ := data["problems"].(map[string]any)
 	if problemBlock == nil {
