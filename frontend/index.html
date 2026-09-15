@@ -619,9 +619,8 @@
                       <div class="flex items-center gap-2">
                         <span class="relative shrink-0 w-6 h-6 rounded-md overflow-hidden flex items-center justify-center bg-white ring-1 ring-inset ring-black/10"
                               :title="platformLabel(sub.platform)">
-                          <span class="absolute text-[9px] font-semibold text-slate-500">{{ platformIconText(sub.platform) }}</span>
                           <img :src="platformLogo(sub.platform)" :alt="platformLabel(sub.platform)"
-                               class="relative w-full h-full object-contain p-0.5"
+                               class="relative w-full h-full object-contain"
                                @error="$event.target.style.display='none'">
                         </span>
                         <a v-if="sub.submission_url" :href="sub.submission_url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">
@@ -722,9 +721,8 @@
                       <div class="flex items-center gap-2">
                         <span class="relative shrink-0 w-6 h-6 rounded-md overflow-hidden flex items-center justify-center bg-white ring-1 ring-inset ring-black/10"
                               :title="platformLabel(item.platform)">
-                          <span class="absolute text-[9px] font-semibold text-slate-500">{{ platformIconText(item.platform) }}</span>
                           <img :src="platformLogo(item.platform)" :alt="platformLabel(item.platform)"
-                               class="relative w-full h-full object-contain p-0.5"
+                               class="relative w-full h-full object-contain"
                                @error="$event.target.style.display='none'">
                         </span>
                         <a v-if="item.submission_url" :href="item.submission_url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">
