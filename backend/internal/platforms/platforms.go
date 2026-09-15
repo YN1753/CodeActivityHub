@@ -785,6 +785,16 @@ func leetCodeCSRFToken(cookieHeader string) string {
 	return ""
 }
 
+// leetCodeIsPending 判断这条提交是否还在判题。接口里 isPending 是字符串
+// （形如 "Not Pending" / "Pending"），不是布尔值——按布尔解析会让整个响应解析失败。
+func leetCodeIsPending(raw string) bool {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return false
+	}
+	return !strings.Contains(s, "not") && strings.Contains(s, "pending")
+}
+
 // leetCodeSubmissionList 拉取登录用户的提交流水（含未通过，错题本/热力图才算完整）。
 // 国际站与中国站同名接口 submissionList，但节点字段不同（2026-09 实测）：
 //
@@ -817,7 +827,7 @@ func (c *Client) leetCodeSubmissionList(ctx context.Context, graphqlEP, cookie s
 					Timestamp string `json:"timestamp"`
 					Lang      string `json:"lang"`
 					Status    string `json:"statusDisplay"`
-					Pending   bool   `json:"isPending"`
+					Pending   string `json:"isPending"`
 				} `json:"submissions"`
 			} `json:"submissionList"`
 		}
@@ -831,7 +841,7 @@ func (c *Client) leetCodeSubmissionList(ctx context.Context, graphqlEP, cookie s
 		}
 		for _, x := range out.List.Submissions {
 			items = append(items, leetCodeSubmissionItem{ID: x.ID, Title: x.Title, Slug: x.Slug, URL: x.URL,
-				Timestamp: x.Timestamp, Lang: x.Lang, Status: x.Status, Pending: x.Pending})
+				Timestamp: x.Timestamp, Lang: x.Lang, Status: x.Status, Pending: leetCodeIsPending(x.Pending)})
 		}
 		if !out.List.HasNext || out.List.LastKey == "" {
 			break
