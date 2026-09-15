@@ -702,10 +702,27 @@ func (c *Client) verifyLeetCode(ctx context.Context, username string) (Profile, 
 		"国际站 leetcode.com 与力扣中国站 leetcode.cn 都已尝试")
 }
 
+// 力扣有两套站：国际站（leetcode.com）与力扣中国站（leetcode.cn），
+// 两者的 schema 与可用接口都不同。verifyLeetCode 探测后会在 Note 里写明站点，
+// 这里据此选择 GraphQL 端点与网页前缀。
+func leetCodeSiteOf(p Profile) (graphqlEP, webBase string) {
+	if strings.Contains(p.Note, "leetcode.cn") {
+		return "https://leetcode.cn/graphql/", "https://leetcode.cn"
+	}
+	return "https://leetcode.com/graphql", "https://leetcode.com"
+}
+
 func (c *Client) syncLeetCode(ctx context.Context, username string) (SyncResult, error) {
 	profile, err := c.verifyLeetCode(ctx, username)
 	if err != nil {
 		return SyncResult{}, err
+	}
+	graphqlEP, _ := leetCodeSiteOf(profile)
+	// 力扣中国站没有公开的提交记录接口（recentAcSubmissionList / submissions 等都不存在，
+	// 2026-09 实测），提交记录依赖浏览器脚本上报（脚本 @match 已覆盖 leetcode.cn）。
+	if strings.Contains(graphqlEP, "leetcode.cn") {
+		return SyncResult{Platform: "leetcode", Profile: profile,
+			Message: "力扣中国站不提供公开的提交记录接口，提交记录请使用篡改猴脚本接入（已支持）"}, nil
 	}
 	const q = `query($username:String!,$limit:Int!){ recentAcSubmissionList(username:$username,limit:$limit){ id title titleSlug timestamp lang statusDisplay } }`
 	var out struct {
@@ -718,7 +735,7 @@ func (c *Client) syncLeetCode(ctx context.Context, username string) (SyncResult,
 			Status    string `json:"statusDisplay"`
 		} `json:"recentAcSubmissionList"`
 	}
-	if err := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{"username": username, "limit": 1000}, &out); err != nil {
+	if err := c.postGraphQL(ctx, graphqlEP, q, map[string]any{"username": username, "limit": 1000}, &out); err != nil {
 		return SyncResult{}, err
 	}
 	// 提交接口只给 titleSlug，先批量换成题号，与题库表（题号）保持一致
@@ -789,22 +806,42 @@ func (c *Client) leetCodeFrontendIDs(ctx context.Context, slugs []string) map[st
 }
 
 func (c *Client) leetCodeProblems(ctx context.Context, page, limit int) ([]Problem, int, error) {
-	// 注意：problemsetQuestionList 已被 LeetCode 移除（2026-09 实测报错），
-	// 改用 problemsetQuestionListV2；它没有 total 字段，总数在 totalLength。
-	const q = `query($skip:Int!,$limit:Int!){ problemsetQuestionListV2(skip:$skip,limit:$limit){ questions{questionFrontendId title titleSlug difficulty topicTags{name}} totalLength hasMore } }`
+	// 国际站优先；国际站取不到（网络/风控）时回落到力扣中国站——
+	// 中国站仍是同一套 V2 schema，字段一致（2026-09 实测）。
+	rows, total, err := c.leetCodeProblemsFrom(ctx, "https://leetcode.com/graphql", "https://leetcode.com", false, page, limit)
+	if err == nil && len(rows) > 0 {
+		return rows, total, nil
+	}
+	cnRows, cnTotal, cnErr := c.leetCodeProblemsFrom(ctx, "https://leetcode.cn/graphql/", "https://leetcode.cn", true, page, limit)
+	if cnErr != nil {
+		if err == nil {
+			return nil, 0, cnErr
+		}
+		return nil, 0, err
+	}
+	return cnRows, cnTotal, nil
+}
+
+// leetCodeProblemsFrom 从指定站点取一页题库。
+// 注意：problemsetQuestionList 已被 LeetCode 移除（2026-09 实测报错），
+// 改用 problemsetQuestionListV2；它没有 total 字段，总数在 totalLength。
+// chinese 为真时优先用中文标题（中国站的 translatedTitle）。
+func (c *Client) leetCodeProblemsFrom(ctx context.Context, graphqlEP, webBase string, chinese bool, page, limit int) ([]Problem, int, error) {
+	const q = `query($skip:Int!,$limit:Int!){ problemsetQuestionListV2(skip:$skip,limit:$limit){ questions{questionFrontendId title translatedTitle titleSlug difficulty topicTags{name}} totalLength hasMore } }`
 	var out struct {
 		List struct {
 			Total     int `json:"totalLength"`
 			Questions []struct {
-				FrontendID string                  `json:"questionFrontendId"`
-				Title      string                  `json:"title"`
-				Slug       string                  `json:"titleSlug"`
-				Difficulty string                  `json:"difficulty"`
-				Tags       []struct{ Name string } `json:"topicTags"`
+				FrontendID      string                  `json:"questionFrontendId"`
+				Title           string                  `json:"title"`
+				TranslatedTitle string                  `json:"translatedTitle"`
+				Slug            string                  `json:"titleSlug"`
+				Difficulty      string                  `json:"difficulty"`
+				Tags            []struct{ Name string } `json:"topicTags"`
 			} `json:"questions"`
 		} `json:"problemsetQuestionListV2"`
 	}
-	if err := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{"skip": (page - 1) * limit, "limit": limit}, &out); err != nil {
+	if err := c.postGraphQL(ctx, graphqlEP, q, map[string]any{"skip": (page - 1) * limit, "limit": limit}, &out); err != nil {
 		return nil, 0, err
 	}
 	rows := make([]Problem, 0, len(out.List.Questions))
@@ -813,7 +850,11 @@ func (c *Client) leetCodeProblems(ctx context.Context, page, limit int) ([]Probl
 		for _, t := range x.Tags {
 			tags = append(tags, t.Name)
 		}
-		rows = append(rows, Problem{Platform: "leetcode", ID: x.FrontendID, Title: x.Title, Difficulty: x.Difficulty, Tags: tags, URL: "https://leetcode.com/problems/" + x.Slug + "/"})
+		title := x.Title
+		if chinese && strings.TrimSpace(x.TranslatedTitle) != "" {
+			title = x.TranslatedTitle
+		}
+		rows = append(rows, Problem{Platform: "leetcode", ID: x.FrontendID, Title: title, Difficulty: x.Difficulty, Tags: tags, URL: webBase + "/problems/" + x.Slug + "/"})
 	}
 	return rows, out.List.Total, nil
 }
