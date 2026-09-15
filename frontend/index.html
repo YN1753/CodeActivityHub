@@ -665,6 +665,52 @@
               <h2 class="text-sm font-semibold">平台账号</h2>
               <span class="ui-hint">同一平台可保存多个，单选切换启用的账号</span>
             </div>
+
+            <!-- 填写说明统一放这里：输入框里只写"填什么"，避免每张卡片重复一遍流程 -->
+            <details class="ui-card p-4 text-xs text-slate-600">
+              <summary class="cursor-pointer font-medium text-slate-700">填写说明（用户名 / Cookie 怎么拿）</summary>
+              <div class="mt-3 space-y-2">
+                <p class="text-slate-500">填了 Cookie 的平台才能同步历史提交记录；不填也能校验账号，只是同步不到记录。</p>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-left">
+                    <thead class="text-slate-400">
+                      <tr>
+                        <th class="py-1 pr-4 font-normal">平台</th>
+                        <th class="py-1 pr-4 font-normal">用户名</th>
+                        <th class="py-1 font-normal">Cookie</th>
+                      </tr>
+                    </thead>
+                    <tbody class="align-top">
+                      <tr>
+                        <td class="py-1 pr-4">Codeforces</td>
+                        <td class="py-1 pr-4">主页 URL 里的 handle</td>
+                        <td class="py-1">不需要</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1 pr-4">LeetCode</td>
+                        <td class="py-1 pr-4"><code>/u/</code> 后面那段，不是昵称</td>
+                        <td class="py-1">需要 <code>LEETCODE_SESSION</code>：登录后 F12 → Network → 任意请求 → Request Headers 复制整段 cookie</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1 pr-4">AtCoder</td>
+                        <td class="py-1 pr-4">主页 URL 里的 handle</td>
+                        <td class="py-1">不需要</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1 pr-4">洛谷</td>
+                        <td class="py-1 pr-4">纯数字 UID</td>
+                        <td class="py-1">需要 <code>__client_id</code>：同样方式复制整段 cookie（UID 会自动补上）</td>
+                      </tr>
+                      <tr>
+                        <td class="py-1 pr-4">AcWing</td>
+                        <td class="py-1 pr-4">空间 ID</td>
+                        <td class="py-1">无需填写（只能用浏览器脚本接入）</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </details>
             <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
               <div v-for="(meta, key) in platformMeta" :key="key" class="ui-card p-4 space-y-3">
                 <div class="flex items-center justify-between">
@@ -720,7 +766,6 @@
                     <button @click="addAccount(key, true)" class="btn-primary flex-1 py-1.5 text-xs">保存并验证</button>
                     <button @click="addAccount(key, false)" class="btn-secondary py-1.5 text-xs">仅保存</button>
                   </div>
-                  <p class="ui-hint">{{ meta.authText }}</p>
                 </div>
               </div>
             </div>

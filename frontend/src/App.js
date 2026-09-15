@@ -228,13 +228,14 @@ const app = createApp({
     const freshTokenName = ref("");
 
     // --- 平台多账号：同一平台可保存多个，单选启用 ---
-    // canSync：服务端能否拉取该平台的历史提交记录（AcWing 无公开接口，只能靠浏览器脚本）
+    // canSync：服务端能否拉取该平台的历史提交记录（AcWing 无公开接口，只能靠浏览器脚本）。
+    // 占位符只写"填什么"，具体怎么拿统一放在设置页的「填写说明」里（见 index.html）。
     const platformMeta = {
-      codeforces: { label: "Codeforces", dot: "bg-blue-500", handleLabel: "用户名 (Handle)", handlePlaceholder: "输入 CF 用户名 (如 MCGA_WJJ)", cookie: false, canSync: true, authText: "公开 API 免 Cookie" },
-      leetcode: { label: "LeetCode", dot: "bg-amber-500", handleLabel: "用户名 (Username)", handlePlaceholder: "输入 LeetCode 用户名（/u/ 后面那段）", cookie: true, cookieLabel: "Cookie（LEETCODE_SESSION，用于同步提交流水）", cookiePlaceholder: "F12 → Network → 任意 leetcode 请求 → Request Headers 里复制整段 cookie", canSync: true, authText: "不填 Cookie：只能校验账号，拿不到提交流水；填了 Cookie 才能同步历史（含未通过记录）。力扣中国站必须填 Cookie" },
-      atcoder: { label: "AtCoder", dot: "bg-purple-500", handleLabel: "用户名 (Handle)", handlePlaceholder: "输入 AtCoder 用户名 (如 FarmingWAs)", cookie: false, canSync: true, authText: "公开 API 免 Cookie" },
-      luogu: { label: "洛谷", dot: "bg-sky-500", handleLabel: "UID (纯数字)", handlePlaceholder: "输入 UID 纯数字 (如 1940760)", cookie: true, cookieLabel: "Cookie（__client_id 值，或整段 cookie）", cookiePlaceholder: "F12 → Network → 复制整段 cookie", canSync: true, authText: "UID 用公开主页校验；同步历史需要 __client_id + _uid（UID 会自动补上）" },
-      acwing: { label: "AcWing", dot: "bg-indigo-500", handleLabel: "空间 ID (纯数字)", handlePlaceholder: "输入空间 ID 纯数字 (如 360946)", cookie: true, cookieLabel: "Cookie (sessionid)", cookiePlaceholder: "输入 sessionid 字符串", canSync: false, authText: "接口暂未适配，仅浏览器脚本实时接入" }
+      codeforces: { label: "Codeforces", dot: "bg-blue-500", handlePlaceholder: "用户名", cookie: false, canSync: true },
+      leetcode: { label: "LeetCode", dot: "bg-amber-500", handlePlaceholder: "用户名", cookie: true, cookiePlaceholder: "LEETCODE_SESSION", canSync: true },
+      atcoder: { label: "AtCoder", dot: "bg-purple-500", handlePlaceholder: "用户名", cookie: false, canSync: true },
+      luogu: { label: "洛谷", dot: "bg-sky-500", handlePlaceholder: "UID", cookie: true, cookiePlaceholder: "__client_id", canSync: true },
+      acwing: { label: "AcWing", dot: "bg-indigo-500", handlePlaceholder: "空间 ID", cookie: true, cookiePlaceholder: "sessionid", canSync: false }
     };
     const accounts = ref([]);
     const isLoadingAccounts = ref(false);
