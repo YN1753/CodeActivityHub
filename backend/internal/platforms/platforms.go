@@ -474,6 +474,10 @@ func (c *Client) postGraphQL(ctx context.Context, endpoint, query string, variab
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "CodeActivityHub/1.0")
+	// 力扣（尤其中国站）会校验来源，缺 Referer 容易被挡
+	if u, perr := url.Parse(endpoint); perr == nil && u.Scheme != "" && u.Host != "" {
+		req.Header.Set("Referer", u.Scheme+"://"+u.Host+"/")
+	}
 	res, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -669,19 +673,33 @@ func (c *Client) verifyLeetCode(ctx context.Context, username string) (Profile, 
 			} `json:"submitStats"`
 		} `json:"matchedUser"`
 	}
-	if err := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{"username": username}, &out); err != nil {
-		return Profile{}, err
-	}
-	if out.User.Username == "" {
-		return Profile{}, fmt.Errorf("LeetCode 用户不存在")
-	}
-	solved := 0
-	for _, x := range out.User.Stats.AC {
-		if strings.EqualFold(x.Difficulty, "All") {
-			solved = x.Count
+	qErr := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{"username": username}, &out)
+	if qErr == nil && out.User.Username != "" {
+		solved := 0
+		for _, x := range out.User.Stats.AC {
+			if strings.EqualFold(x.Difficulty, "All") {
+				solved = x.Count
+			}
 		}
+		return Profile{Platform: "leetcode", Handle: out.User.Username, Rating: strconv.Itoa(out.User.Profile.Ranking), Solved: solved}, nil
 	}
-	return Profile{Platform: "leetcode", Handle: out.User.Username, Rating: strconv.Itoa(out.User.Profile.Ranking), Solved: solved}, nil
+
+	// 国际站没有这个用户就再试力扣中国站：两站 schema 不同，
+	// 中国站的用户查询是 userProfilePublicProfile(userSlug:)。
+	const cnQ = `query($userSlug:String!){ userProfilePublicProfile(userSlug:$userSlug){ username siteRanking } }`
+	var cn struct {
+		Profile struct {
+			Username    string `json:"username"`
+			SiteRanking int    `json:"siteRanking"`
+		} `json:"userProfilePublicProfile"`
+	}
+	if err := c.postGraphQL(ctx, "https://leetcode.cn/graphql/", cnQ, map[string]any{"userSlug": username}, &cn); err == nil && cn.Profile.Username != "" {
+		return Profile{Platform: "leetcode", Handle: cn.Profile.Username,
+			Rating: strconv.Itoa(cn.Profile.SiteRanking), Note: "力扣中国站（leetcode.cn）"}, nil
+	}
+
+	return Profile{}, fmt.Errorf("LeetCode 用户不存在：请填个人主页 URL 里 /u/ 后面那段用户名（英文/数字），不要填昵称。" +
+		"国际站 leetcode.com 与力扣中国站 leetcode.cn 都已尝试")
 }
 
 func (c *Client) syncLeetCode(ctx context.Context, username string) (SyncResult, error) {
