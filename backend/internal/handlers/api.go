@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -22,6 +23,37 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+)
+
+// ---------------------------------------------------------------------------
+// 进程内轻量锁与限流：避免依赖外部组件，只用于本文件内的并发保护。
+// ---------------------------------------------------------------------------
+
+// manualSyncMu 保护 manualSyncInProgress，按 (user_id, platform) 互斥，
+// 防止用户连点并发跑多个最长 150s 的同步（重复打接口、重复写库）。
+var (
+	manualSyncMu         sync.Mutex
+	manualSyncInProgress = map[string]bool{}
+)
+
+// loginLimitMu 保护 loginAttempts，按 IP+用户名 记失败次数做登录限流，
+// 避免用户名不存在时仍被拿去跑 PBKDF2 消耗 CPU（DoS）。
+var (
+	loginLimitMu    sync.Mutex
+	loginAttempts   = map[string]*loginAttempt{}
+	loginMaxFails   = 5                // 窗口内允许的失败次数
+	loginFailWindow = 60 * time.Second // 失败计数滑动窗口
+)
+
+type loginAttempt struct {
+	count     int
+	firstSeen time.Time
+}
+
+// displayLocOnce 缓存展示时区，避免批量入库时反复 time.LoadLocation 触发上千次磁盘 IO。
+var (
+	displayLocOnce sync.Once
+	displayLoc     *time.Location
 )
 
 type API struct {
@@ -167,7 +199,11 @@ func (a *API) Register(c *gin.Context) {
 		jsonError(c, 500, "注册失败，请稍后重试")
 		return
 	}
-	token := a.createSession(user.ID)
+	token, err := a.createSession(user.ID)
+	if err != nil {
+		jsonError(c, 500, "会话创建失败")
+		return
+	}
 	c.JSON(200, gin.H{"success": true, "message": "注册成功", "token": token, "user": userResponse(user)})
 }
 
@@ -177,13 +213,68 @@ func (a *API) Login(c *gin.Context) {
 		jsonError(c, 400, "请求格式错误")
 		return
 	}
+	username := strings.TrimSpace(req.Username)
+	// 登录限流：同一 IP+用户名 在窗口内失败过多直接拒绝，避免 PBKDF2 被拿消耗 CPU。
+	if !loginRateAllow(c.ClientIP(), username) {
+		jsonError(c, 429, "登录尝试过于频繁，请稍后再试")
+		return
+	}
 	var user models.User
-	if err := a.DB.Where("username = ?", strings.TrimSpace(req.Username)).First(&user).Error; err != nil || !database.VerifyPassword(req.Password, user.Salt, user.PasswordHash) {
+	if err := a.DB.Where("username = ?", username).First(&user).Error; err != nil {
+		// 用户不存在：仍跑一次哈希，使耗时与"密码错误"趋于一致，
+		// 避免时序差异泄露账号是否存在；随后按失败计一次。
+		_, _, _ = database.HashPassword(req.Password)
+		loginRateFail(c.ClientIP(), username)
 		jsonError(c, 400, "用户名或密码错误")
 		return
 	}
-	token := a.createSession(user.ID)
+	if !database.VerifyPassword(req.Password, user.Salt, user.PasswordHash) {
+		loginRateFail(c.ClientIP(), username)
+		jsonError(c, 400, "用户名或密码错误")
+		return
+	}
+	loginRateReset(c.ClientIP(), username)
+	token, err := a.createSession(user.ID)
+	if err != nil {
+		jsonError(c, 500, "会话创建失败")
+		return
+	}
 	c.JSON(200, gin.H{"success": true, "message": "登录成功", "token": token, "user": userResponse(user)})
+}
+
+// loginRateAllow 在窗口内失败次数未达上限时返回 true；超限返回 false（调用方应拒绝）。
+func loginRateAllow(ip, username string) bool {
+	loginLimitMu.Lock()
+	defer loginLimitMu.Unlock()
+	key := ip + "\x00" + username
+	now := time.Now()
+	at, ok := loginAttempts[key]
+	if !ok || now.Sub(at.firstSeen) > loginFailWindow {
+		loginAttempts[key] = &loginAttempt{count: 0, firstSeen: now}
+		return true
+	}
+	return at.count < loginMaxFails
+}
+
+// loginRateFail 记一次失败；超过窗口则重置计数起点。
+func loginRateFail(ip, username string) {
+	loginLimitMu.Lock()
+	defer loginLimitMu.Unlock()
+	key := ip + "\x00" + username
+	now := time.Now()
+	at, ok := loginAttempts[key]
+	if !ok || now.Sub(at.firstSeen) > loginFailWindow {
+		loginAttempts[key] = &loginAttempt{count: 1, firstSeen: now}
+		return
+	}
+	at.count++
+}
+
+// loginRateReset 登录成功后清除失败计数。
+func loginRateReset(ip, username string) {
+	loginLimitMu.Lock()
+	defer loginLimitMu.Unlock()
+	delete(loginAttempts, ip+"\x00"+username)
 }
 
 func validUsername(name string) bool {
@@ -212,12 +303,14 @@ func isUniqueViolation(err error) bool {
 func userResponse(user models.User) gin.H {
 	return gin.H{"id": user.ID, "username": user.Username, "is_admin": user.IsAdmin}
 }
-func (a *API) createSession(uid uint) string {
+func (a *API) createSession(uid uint) (string, error) {
 	buf := make([]byte, 32)
 	_, _ = rand.Read(buf)
 	token := hex.EncodeToString(buf)
-	a.DB.Create(&models.Session{Token: token, UserID: uid, ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339)})
-	return token
+	if err := a.DB.Create(&models.Session{Token: token, UserID: uid, ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339)}).Error; err != nil {
+		return "", err
+	}
+	return token, nil
 }
 func (a *API) Me(c *gin.Context) {
 	var user models.User
@@ -242,7 +335,11 @@ func (a *API) ChangePassword(c *gin.Context) {
 		jsonError(c, 400, "原密码错误")
 		return
 	}
-	hash, salt, _ := database.HashPassword(req.NewPassword)
+	hash, salt, err := database.HashPassword(req.NewPassword)
+	if err != nil {
+		jsonError(c, 500, "密码处理失败")
+		return
+	}
 	a.DB.Model(&user).Updates(map[string]any{"password_hash": hash, "salt": salt})
 	a.DB.Delete(&models.Session{}, "user_id = ?", user.ID)
 	// 改密码应该让所有脚本 token 一起失效，否则"改了密码脚本照样能提交"。
@@ -278,9 +375,9 @@ func (a *API) Overview(c *gin.Context) {
 
 func (a *API) Heatmap(c *gin.Context) {
 	uid := userID(c)
-	year, _ := strconv.Atoi(c.DefaultQuery("year", strconv.Itoa(time.Now().Year())))
+	year, _ := strconv.Atoi(c.DefaultQuery("year", strconv.Itoa(time.Now().In(displayLocation()).Year())))
 	if year == 0 {
-		year = time.Now().Year()
+		year = time.Now().In(displayLocation()).Year()
 	}
 	query := a.DB.Model(&models.Submission{}).Select("date, COUNT(*) AS count").Where("user_id = ? AND date LIKE ?", uid, fmt.Sprintf("%04d-%%", year))
 	if p := c.Query("platform"); p != "" && p != "all" {
@@ -293,7 +390,7 @@ func (a *API) Heatmap(c *gin.Context) {
 		values[row.Date] = row.Count
 	}
 	result := make([]gin.H, 0, 366)
-	start := time.Date(year, 1, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(year, 1, 1, 0, 0, 0, 0, displayLocation())
 	for d := start; d.Year() == year; d = d.AddDate(0, 0, 1) {
 		ds := d.Format("2006-01-02")
 		result = append(result, gin.H{"date": ds, "count": values[ds]})
@@ -311,8 +408,8 @@ func (a *API) Heatmap(c *gin.Context) {
 			years = append(years, y)
 		}
 	}
-	if !yearSet[time.Now().Year()] {
-		years = append(years, time.Now().Year())
+	if !yearSet[time.Now().In(displayLocation()).Year()] {
+		years = append(years, time.Now().In(displayLocation()).Year())
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(years)))
 	c.JSON(200, gin.H{"year": year, "heatmap": result, "available_years": years})
@@ -377,10 +474,10 @@ func (a *API) Mistakes(c *gin.Context) {
 	}
 	// 模板的错题表会展示最近一次失败提交的判定、难度和跳转链接，一并查出。
 	a.DB.Raw(`SELECT s.platform, s.problem_id, s.problem_title, MAX(s.submitted_at) AS submitted_at, COUNT(*) AS fail_times,
-		(SELECT s2.verdict FROM submissions s2 WHERE s2.user_id=s.user_id AND s2.platform=s.platform AND s2.problem_id=s.problem_id AND s2.verdict != 'AC' ORDER BY s2.submitted_at DESC LIMIT 1) AS verdict,
-		(SELECT s2.difficulty FROM submissions s2 WHERE s2.user_id=s.user_id AND s2.platform=s.platform AND s2.problem_id=s.problem_id AND s2.verdict != 'AC' ORDER BY s2.submitted_at DESC LIMIT 1) AS difficulty,
-		(SELECT s2.submission_url FROM submissions s2 WHERE s2.user_id=s.user_id AND s2.platform=s.platform AND s2.problem_id=s.problem_id AND s2.verdict != 'AC' ORDER BY s2.submitted_at DESC LIMIT 1) AS submission_url
-		FROM submissions s WHERE s.user_id = ? AND s.verdict != 'AC' AND NOT EXISTS (SELECT 1 FROM submissions ac WHERE ac.user_id=s.user_id AND ac.platform=s.platform AND ac.problem_id=s.problem_id AND ac.verdict='AC') GROUP BY s.platform,s.problem_id ORDER BY fail_times DESC, submitted_at DESC LIMIT ?`, userID(c), limit).Scan(&rows)
+		(SELECT s2.verdict FROM submissions s2 WHERE s2.user_id=s.user_id AND s2.platform=s.platform AND s2.problem_id=s.problem_id AND s2.verdict NOT IN ('AC','PENDING','JUDGING','UNKNOWN') ORDER BY s2.submitted_at DESC LIMIT 1) AS verdict,
+		(SELECT s2.difficulty FROM submissions s2 WHERE s2.user_id=s.user_id AND s2.platform=s.platform AND s2.problem_id=s.problem_id AND s2.verdict NOT IN ('AC','PENDING','JUDGING','UNKNOWN') ORDER BY s2.submitted_at DESC LIMIT 1) AS difficulty,
+		(SELECT s2.submission_url FROM submissions s2 WHERE s2.user_id=s.user_id AND s2.platform=s.platform AND s2.problem_id=s.problem_id AND s2.verdict NOT IN ('AC','PENDING','JUDGING','UNKNOWN') ORDER BY s2.submitted_at DESC LIMIT 1) AS submission_url
+		FROM submissions s WHERE s.user_id = ? AND s.verdict NOT IN ('AC','PENDING','JUDGING','UNKNOWN') AND NOT EXISTS (SELECT 1 FROM submissions ac WHERE ac.user_id=s.user_id AND ac.platform=s.platform AND ac.problem_id=s.problem_id AND ac.verdict='AC') GROUP BY s.platform,s.problem_id ORDER BY fail_times DESC, submitted_at DESC LIMIT ?`, userID(c), limit).Scan(&rows)
 	result := make([]gin.H, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, gin.H{"platform": row.Platform, "problem_id": row.ProblemID, "problem_title": row.ProblemTitle,
@@ -480,6 +577,15 @@ func (a *API) GetSettings(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"configs": values, "status": statusMap})
 }
+
+// allowedSettingKeys 配置白名单：只允许写入这些已知的平台配置键，
+// 避免任意 key 被写进 user_configs（例如覆盖其他模块使用的键、注入脏数据）。
+var allowedSettingKeys = map[string]bool{
+	"cf_handle": true, "luogu_uid": true, "leetcode_username": true,
+	"atcoder_handle": true, "acwing_user_id": true,
+	"luogu_cookie": true, "acwing_cookie": true,
+}
+
 func (a *API) UpdateSettings(c *gin.Context) {
 	var values map[string]any
 	if c.ShouldBindJSON(&values) != nil {
@@ -487,12 +593,29 @@ func (a *API) UpdateSettings(c *gin.Context) {
 		return
 	}
 	uid := userID(c)
-	for key, value := range values {
-		if value == nil {
-			continue
+	// 单事务写入：要么全部成功，要么失败时明确报错，避免"部分写入却报成功"。
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		for key, value := range values {
+			if value == nil {
+				continue
+			}
+			if !allowedSettingKeys[key] {
+				// 非法键不写入，但也不阻断其余合法键——只跳过。
+				continue
+			}
+			row := models.UserConfig{UserID: uid, Key: key, Value: fmt.Sprint(value)}
+			if err := tx.Where("user_id = ? AND key = ?", uid, key).
+				Assign(models.UserConfig{Value: row.Value, UpdatedAt: time.Now()}).
+				FirstOrCreate(&row).Error; err != nil {
+				return err
+			}
 		}
-		row := models.UserConfig{UserID: uid, Key: key, Value: fmt.Sprint(value)}
-		a.DB.Where("user_id = ? AND key = ?", uid, key).Assign(models.UserConfig{Value: row.Value, UpdatedAt: time.Now()}).FirstOrCreate(&row)
+		return nil
+	})
+	if err != nil {
+		log.Printf("更新设置失败 uid=%d: %v", uid, err)
+		jsonError(c, 500, "配置保存失败")
+		return
 	}
 	c.JSON(200, gin.H{"success": true, "message": "配置更新成功"})
 }
@@ -655,14 +778,41 @@ func (a *API) ManualSync(c *gin.Context) {
 		return
 	}
 	uid := userID(c)
-	// 洛谷一次可翻几十页，而客户端对同一域名有 800ms 的节流，
-	// 整体会比较慢——超时给足，宁可慢也别中途失败留下半截数据。
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 150*time.Second)
-	defer cancel()
 	platformList := []string{requested}
 	if requested == "all" {
 		platformList = []string{"codeforces", "leetcode", "atcoder", "luogu", "acwing"}
 	}
+	// 并发保护：同一用户的同一平台只允许一个同步在跑，连点直接返回 409，
+	// 避免多个最长 150s 的同步并发打接口、并发写库。
+	keys := make([]string, 0, len(platformList))
+	for _, name := range platformList {
+		keys = append(keys, fmt.Sprintf("%d:%s", uid, name))
+	}
+	manualSyncMu.Lock()
+	busy := false
+	for _, k := range keys {
+		if manualSyncInProgress[k] {
+			busy = true
+			break
+		}
+	}
+	if !busy {
+		for _, k := range keys {
+			manualSyncInProgress[k] = true
+		}
+	}
+	manualSyncMu.Unlock()
+	if busy {
+		jsonError(c, http.StatusConflict, "同步进行中，请稍候再试")
+		return
+	}
+	defer func() {
+		manualSyncMu.Lock()
+		for _, k := range keys {
+			delete(manualSyncInProgress, k)
+		}
+		manualSyncMu.Unlock()
+	}()
 	results := make([]gin.H, 0, len(platformList))
 	total := 0
 	failed := 0
@@ -686,7 +836,11 @@ func (a *API) ManualSync(c *gin.Context) {
 			}
 			continue
 		}
+		// 每个平台各自独立的超时预算：共享同一个 context 会让前一个慢平台
+		// 耗尽后剩余平台必然 deadline exceeded，却被判成"网络波动"写假告警。
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 150*time.Second)
 		inserted, message, err := a.syncOne(ctx, uid, name, cfg)
+		cancel()
 		if err != nil {
 			failed++
 			if message == "" {
@@ -1080,17 +1234,11 @@ func ingestTokenResponse(row models.IngestToken, plain string) gin.H {
 		"created_at": row.CreatedAt, "last_used_at": row.LastUsedAt, "revoked_at": row.RevokedAt}
 }
 
-// IngestToken 签发一个新的长效脚本 token。
-// 明文只存哈希、无法回显，所以每次调用都新发一条——多设备各拿各的，
-// 设置页里可以逐条查看和吊销。早期版本这里直接返回登录会话 token，7 天就过期。
+// IngestToken 旧版「每次 GET 都新签一条 token」的接口，前端从未使用，
+// 且 GET 建资源 + 无限流会导致凭证无限堆积。已废弃，改用 POST /api/ingest/tokens
+// （带名称、可在设置页逐条查看/吊销/轮换）。前端只调用复数接口，这里直接 410。
 func (a *API) IngestToken(c *gin.Context) {
-	row, plain, err := a.issueIngestToken(userID(c), "浏览器脚本")
-	if err != nil {
-		jsonError(c, 500, "Token 生成失败")
-		return
-	}
-	c.JSON(200, gin.H{"token": plain, "token_id": row.ID, "endpoint": "/api/ingest/submission",
-		"expires": "长期有效", "warning": "该 Token 只能提交记录，等同于账号权限，请勿分享；可在设置页吊销或轮换。"})
+	c.JSON(http.StatusGone, gin.H{"success": false, "message": "该接口已废弃，请改用 POST /api/ingest/tokens 创建长效脚本 Token"})
 }
 
 // issueIngestToken 返回入库记录与明文。明文仅在本次调用返回，之后只能靠 token_hint 辨认。
@@ -1204,7 +1352,8 @@ func (a *API) IngestSubmission(c *gin.Context) {
 	}
 	inserted, err := a.saveSubmission(userID(c), req)
 	if err != nil {
-		jsonError(c, 400, err.Error())
+		jsonError(c, 500, "提交记录保存失败")
+		log.Printf("ingest 写入失败: %v", err)
 		return
 	}
 	c.JSON(200, gin.H{"success": true, "inserted": inserted, "message": "提交记录已接收"})
@@ -1219,7 +1368,8 @@ func (a *API) IngestBatch(c *gin.Context) {
 	for _, item := range req.Submissions {
 		n, err := a.saveSubmission(userID(c), item)
 		if err != nil {
-			jsonError(c, 400, err.Error())
+			jsonError(c, 500, "提交记录保存失败")
+			log.Printf("ingest 写入失败: %v", err)
 			return
 		}
 		inserted += n
@@ -1259,7 +1409,10 @@ func (a *API) saveSubmission(uid uint, req ingestRequest) (int, error) {
 	}
 	raw := strings.TrimSpace(req.RawID)
 	if raw == "" {
-		raw = fmt.Sprintf("%s:%s:%s", platform, req.ProblemID, req.SubmittedAt)
+		// 回退值必须与入库格式一致：用归一化后的时间，否则同一条提交以
+		// RFC3339 和 "YYYY-MM-DD HH:mm:ss" 两种格式各上报一次会生成两个 raw_id，
+		// 导致 OnConflict 去重失效、重复记录、AC 统计虚高。
+		raw = fmt.Sprintf("%s:%s:%s", platform, req.ProblemID, normalizeSubmittedAt(req.SubmittedAt))
 	}
 	// 主键与 raw_id 列宽 255，超长会直接写入失败并让整批 ingest 回滚。
 	raw = truncate(raw, 200)
@@ -1353,12 +1506,17 @@ func (a *API) streak(uid uint) int {
 
 // displayLocation 返回看板展示时区。系统缺少 tzdata 时（精简容器/部分 Linux
 // 发行版）LoadLocation 会失败，此时必须回退到固定的 UTC+8，否则 t.In(nil) 会 panic。
+// 结果用 sync.Once 缓存，避免批量入库时反复 LoadLocation 触发上千次磁盘 IO。
 func displayLocation() *time.Location {
-	loc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		return time.FixedZone("CST", 8*3600)
-	}
-	return loc
+	displayLocOnce.Do(func() {
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			displayLoc = time.FixedZone("CST", 8*3600)
+			return
+		}
+		displayLoc = loc
+	})
+	return displayLoc
 }
 
 // effectiveDate 按展示时区返回自然日。此前这里额外减去 4 小时，导致凌晨的提交
@@ -1392,25 +1550,44 @@ func parseTime(value string) time.Time {
 			return result
 		}
 	}
+	// 脏时间兜底成当前时间，但至少留一条日志，避免热力图错日却毫无痕迹。
+	log.Printf("parseTime: 无法解析提交时间 %q，回退为当前时间", value)
 	return time.Now()
 }
 
 // NormalizeSubmissionTimes 修复历史数据：早期版本混用 RFC3339 与本地时间字符串，
 // 同一天内排序必然错乱。启动时把所有记录统一成展示时区的
 // "YYYY-MM-DD HH:mm:ss" 并重算 date，保证老数据也能正确排序和筛选。
+// 改为按 id 分批（LIMIT）处理、每批单事务，循环到没有可修的行为止，
+// 避免数据量大时启动极慢、对生产库长时间持锁。
 func NormalizeSubmissionTimes(db *gorm.DB) error {
-	var rows []models.Submission
-	if err := db.Select("id, submitted_at, date").Find(&rows).Error; err != nil {
-		return err
-	}
-	for _, row := range rows {
-		normalized := normalizeSubmittedAt(row.SubmittedAt)
-		date := effectiveDate(parseTime(normalized))
-		if normalized == row.SubmittedAt && date == row.Date {
-			continue
+	const batchSize = 500
+	var lastID string
+	for {
+		var rows []models.Submission
+		if err := db.Select("id, submitted_at, date").Where("id > ?", lastID).
+			Order("id").Limit(batchSize).Find(&rows).Error; err != nil {
+			return err
 		}
-		if err := db.Model(&models.Submission{}).Where("id = ?", row.ID).
-			Updates(map[string]any{"submitted_at": normalized, "date": date}).Error; err != nil {
+		if len(rows) == 0 {
+			break
+		}
+		lastID = rows[len(rows)-1].ID
+		// 每批在单事务内更新，失败整体回滚，避免部分写入。
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			for _, row := range rows {
+				normalized := normalizeSubmittedAt(row.SubmittedAt)
+				date := effectiveDate(parseTime(normalized))
+				if normalized == row.SubmittedAt && date == row.Date {
+					continue
+				}
+				if err := tx.Model(&models.Submission{}).Where("id = ?", row.ID).
+					Updates(map[string]any{"submitted_at": normalized, "date": date}).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 	}

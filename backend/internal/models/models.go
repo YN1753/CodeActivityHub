@@ -95,10 +95,10 @@ type PlatformAccount struct {
 
 type Submission struct {
 	ID              string    `gorm:"primaryKey;size:255" json:"id"`
-	UserID          uint      `gorm:"uniqueIndex:idx_submission_user_platform_raw;not null" json:"-"`
-	Platform        string    `gorm:"uniqueIndex:idx_submission_user_platform_raw;size:32;not null" json:"platform"`
+	UserID          uint      `gorm:"uniqueIndex:idx_submission_user_platform_raw;index:idx_submission_user_platform_problem;not null" json:"-"`
+	Platform        string    `gorm:"uniqueIndex:idx_submission_user_platform_raw;index:idx_submission_user_platform_problem;size:32;not null" json:"platform"`
 	RawID           string    `gorm:"uniqueIndex:idx_submission_user_platform_raw;size:255;not null" json:"raw_id"`
-	ProblemID       string    `json:"problem_id"`
+	ProblemID       string    `gorm:"index:idx_submission_user_platform_problem" json:"problem_id"`
 	ProblemTitle    string    `json:"problem_title"`
 	Verdict         string    `json:"verdict"`
 	Tags            string    `json:"tags"`
@@ -114,13 +114,13 @@ type Submission struct {
 
 type IngestEvent struct {
 	ID           string `gorm:"primaryKey;size:255" json:"id"`
-	UserID       uint   `gorm:"uniqueIndex:idx_event_user_platform_raw;not null" json:"-"`
+	UserID       uint   `gorm:"uniqueIndex:idx_event_user_platform_raw;index:idx_event_user_received;not null" json:"-"`
 	Platform     string `gorm:"uniqueIndex:idx_event_user_platform_raw;size:32;not null" json:"platform"`
 	RawID        string `gorm:"uniqueIndex:idx_event_user_platform_raw;size:255;not null" json:"raw_id"`
 	RequestMeta  string `json:"request_meta"`
 	ResponseData string `json:"response_data"`
 	Source       string `json:"source"`
-	ReceivedAt   string `json:"received_at"`
+	ReceivedAt   string `gorm:"index:idx_event_user_received;size:40" json:"received_at"`
 }
 
 // Problem 是平台公开题库的本地缓存行，(platform, problem_id) 为自然键。

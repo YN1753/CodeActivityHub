@@ -3,10 +3,12 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"codeactivityhub/backend/internal/models"
 	"codeactivityhub/backend/internal/platforms"
@@ -247,15 +249,34 @@ func (a *API) ProblemsSync(c *gin.Context) {
 
 func (a *API) runProblemSync(platform string) {
 	var syncErr error
-	defer func() { a.syncMgr().finish(platform, syncErr) }()
+	defer func() {
+		// 兜底：回调或 AllProblems 里若发生 panic，记成同步失败，
+		// 避免 running 标记永久卡死、拖垮整个进程。
+		if r := recover(); r != nil {
+			syncErr = fmt.Errorf("题库同步协程 panic: %v", r)
+		}
+		a.syncMgr().finish(platform, syncErr)
+	}()
 
-	// 每拉到一页立刻 upsert：长同步中途失败/重启时，已拉取的部分仍然可检索
-	syncErr = a.Platforms.AllProblems(context.Background(), platform, func(rows []platforms.Problem, done, total int) {
+	// 每拉到一页立刻 upsert：长同步中途失败/重启时，已拉取的部分仍然可检索。
+	// 带 30 分钟超时，避免平台接口卡死导致 running 标记永久卡住。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	var callbackErr error
+	retErr := a.Platforms.AllProblems(ctx, platform, func(rows []platforms.Problem, done, total int) {
 		a.syncMgr().progress(platform, done, total)
 		if err := a.saveProblems(platform, rows); err != nil {
-			syncErr = err
+			callbackErr = err
 		}
 	})
+	// 回调里的写库错误与 AllProblems 本身的返回值分开保存：
+	// 只要回调中出过错就保留，避免被成功时的 nil 覆盖而静默吞掉。
+	if callbackErr != nil {
+		syncErr = callbackErr
+	} else {
+		syncErr = retErr
+	}
 }
 
 // saveProblems 分批 upsert：边拉边写，中途失败时已完成的部分不回滚。
