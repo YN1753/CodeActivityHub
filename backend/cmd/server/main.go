@@ -159,6 +159,8 @@ func registerFrontend(r *gin.Engine, dist string) {
 		c.File(index)
 	})
 	r.StaticFile("/favicon.svg", filepath.Join(dist, "favicon.svg"))
+	// 平台 logo 等固定图片：frontend/public/logos 会被 Vite 原样拷到 dist/logos
+	r.Static("/logos", filepath.Join(dist, "logos"))
 	r.Static("/assets", filepath.Join(dist, "assets"))
 	r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") || c.Request.URL.Path == "/healthz" {

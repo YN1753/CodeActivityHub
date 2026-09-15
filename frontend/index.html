@@ -617,8 +617,13 @@
                   <tr v-for="(sub, index) in paginatedSubmissions" :key="sub.id || ('sub-' + index)">
                     <td>
                       <div class="flex items-center gap-2">
-                        <span :class="['shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-semibold text-white ring-1 ring-inset ring-black/10', platformIconClass(sub.platform)]"
-                              :title="platformLabel(sub.platform)">{{ platformIconText(sub.platform) }}</span>
+                        <span class="relative shrink-0 w-6 h-6 rounded-md overflow-hidden flex items-center justify-center bg-white ring-1 ring-inset ring-black/10"
+                              :title="platformLabel(sub.platform)">
+                          <span class="absolute text-[9px] font-semibold text-slate-500">{{ platformIconText(sub.platform) }}</span>
+                          <img :src="platformLogo(sub.platform)" :alt="platformLabel(sub.platform)"
+                               class="relative w-full h-full object-contain p-0.5"
+                               @error="$event.target.style.display='none'">
+                        </span>
                         <a v-if="sub.submission_url" :href="sub.submission_url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">
                           <span class="font-mono text-xs text-slate-400 mr-1">{{ sub.problem_id }}</span>{{ sub.problem_title }}
                         </a>
@@ -715,8 +720,13 @@
                   <tr v-for="item in filteredMistakes" :key="item.platform + item.problem_id">
                     <td>
                       <div class="flex items-center gap-2">
-                        <span :class="['shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-semibold text-white ring-1 ring-inset ring-black/10', platformIconClass(item.platform)]"
-                              :title="platformLabel(item.platform)">{{ platformIconText(item.platform) }}</span>
+                        <span class="relative shrink-0 w-6 h-6 rounded-md overflow-hidden flex items-center justify-center bg-white ring-1 ring-inset ring-black/10"
+                              :title="platformLabel(item.platform)">
+                          <span class="absolute text-[9px] font-semibold text-slate-500">{{ platformIconText(item.platform) }}</span>
+                          <img :src="platformLogo(item.platform)" :alt="platformLabel(item.platform)"
+                               class="relative w-full h-full object-contain p-0.5"
+                               @error="$event.target.style.display='none'">
+                        </span>
                         <a v-if="item.submission_url" :href="item.submission_url" target="_blank" rel="noopener noreferrer" class="text-slate-900 hover:text-blue-600">
                           <span class="font-mono text-xs text-slate-400 mr-1">{{ item.problem_id }}</span>{{ item.problem_title }}
                         </a>
