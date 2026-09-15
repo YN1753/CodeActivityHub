@@ -97,7 +97,19 @@ type Client struct {
 	gateMu      sync.Mutex
 	lastHit     map[string]time.Time
 	minInterval time.Duration
+
+	// 洛谷题库分页元数据（perPage/total 全量一致），缓存避免每页重复取第一页。
+	luoguMetaMu  sync.Mutex
+	luoguPerPage int
+	luoguTotal   int
+	luoguMetaAt  time.Time
 }
+
+// beijingLoc 缓存 Asia/Shanghai 时区，避免数千行记录每条都读磁盘加载时区。
+var (
+	beijingLoc     *time.Location
+	beijingLocOnce sync.Once
+)
 
 type problemCacheEntry struct {
 	items []Problem
@@ -109,7 +121,24 @@ type problemCacheEntry struct {
 const defaultMinInterval = 800 * time.Millisecond
 
 func NewClient() *Client {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		// CheckRedirect：洛谷 C3VK 反爬挑战无 Cookie 时返回 302 回到同域并下发
+		// Set-Cookie，必须停止自动跟随，让 luoguGetText 里的“带 cookie 手动重发”
+		// 逻辑真正生效（默认自动跟随且无 CookieJar，会循环 10 次后报
+		// "stopped after 10 redirects"，那套重发逻辑永远走不到）。
+		// 同 host 的 302 视为挑战、停止跟随；跨 host 的正常跳转照常跟随，
+		// 但保留 10 次上限防止死循环。
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after %d redirects", len(via))
+			}
+			if len(via) > 0 && via[len(via)-1].URL.Host == req.URL.Host {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
 	// CODEACTIVITYHUB_HTTP_PROXY：为所有出站 OJ 请求指定代理（如 http://127.0.0.1:10808）。
 	// 国内直连 codeforces 时通时断，超时率很高；未设置时保持 Go 默认行为
 	// （尊重 HTTP_PROXY/HTTPS_PROXY/NO_PROXY 环境变量）。
@@ -214,11 +243,14 @@ func (c *Client) InvalidateContestCache() {
 }
 
 func beijing() *time.Location {
-	loc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		return time.FixedZone("CST", 8*3600)
-	}
-	return loc
+	beijingLocOnce.Do(func() {
+		if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+			beijingLoc = loc
+		} else {
+			beijingLoc = time.FixedZone("CST", 8*3600)
+		}
+	})
+	return beijingLoc
 }
 
 func contestStartTime(ts int64) string {
@@ -404,7 +436,7 @@ func (c *Client) getText(ctx context.Context, endpoint string) (string, error) {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
 		return "", fmt.Errorf("上游响应 %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
 	}
-	body, err := io.ReadAll(res.Body)
+	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	return string(body), err
 }
 
@@ -427,7 +459,7 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
 		return fmt.Errorf("上游响应 %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
 	}
-	return json.NewDecoder(res.Body).Decode(out)
+	return json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(out)
 }
 
 func (c *Client) postGraphQL(ctx context.Context, endpoint, query string, variables map[string]any, out any) error {
@@ -457,7 +489,7 @@ func (c *Client) postGraphQL(ctx context.Context, endpoint, query string, variab
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err := json.NewDecoder(res.Body).Decode(&envelope); err != nil {
+	if err := json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(&envelope); err != nil {
 		return err
 	}
 	if len(envelope.Errors) > 0 {
@@ -658,19 +690,82 @@ func (c *Client) syncLeetCode(ctx context.Context, username string) (SyncResult,
 	const q = `query($username:String!,$limit:Int!){ recentAcSubmissionList(username:$username,limit:$limit){ id title titleSlug timestamp lang statusDisplay } }`
 	var out struct {
 		Rows []struct {
-			ID                                   string `json:"id"`
-			Title, Slug, Timestamp, Lang, Status string
+			ID        string `json:"id"`
+			Title     string `json:"title"`
+			Slug      string `json:"titleSlug"`
+			Timestamp string `json:"timestamp"`
+			Lang      string `json:"lang"`
+			Status    string `json:"statusDisplay"`
 		} `json:"recentAcSubmissionList"`
 	}
 	if err := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{"username": username, "limit": 1000}, &out); err != nil {
 		return SyncResult{}, err
 	}
+	// 提交接口只给 titleSlug，先批量换成题号，与题库表（题号）保持一致
+	slugs := make([]string, 0, len(out.Rows))
+	seen := make(map[string]bool, len(out.Rows))
+	for _, x := range out.Rows {
+		if x.Slug != "" && !seen[x.Slug] {
+			seen[x.Slug] = true
+			slugs = append(slugs, x.Slug)
+		}
+	}
+	if len(slugs) > leetCodeSlugResolveLimit {
+		slugs = slugs[:leetCodeSlugResolveLimit]
+	}
+	frontendIDs := c.leetCodeFrontendIDs(ctx, slugs)
+
 	rows := make([]Submission, 0, len(out.Rows))
 	for _, x := range out.Rows {
 		ts, _ := strconv.ParseInt(x.Timestamp, 10, 64)
-		rows = append(rows, Submission{RawID: x.ID, ProblemID: x.Slug, ProblemTitle: x.Title, Verdict: "AC", SubmittedAt: time.Unix(ts, 0), URL: "https://leetcode.com/problems/" + x.Slug + "/", Language: x.Lang})
+		pid := x.Slug
+		if v, ok := frontendIDs[x.Slug]; ok && v != "" {
+			pid = v
+		}
+		rows = append(rows, Submission{RawID: x.ID, ProblemID: pid, ProblemTitle: x.Title, Verdict: "AC", SubmittedAt: time.Unix(ts, 0), URL: "https://leetcode.com/problems/" + x.Slug + "/", Language: x.Lang})
 	}
 	return SyncResult{Platform: "leetcode", Profile: profile, Submissions: rows, Message: fmt.Sprintf("从 LeetCode 获取 %d 条已通过提交", len(rows))}, nil
+}
+
+// 单次同步最多解析多少个 slug：受 800ms 节流限制，每 25 个一次请求，
+// 300 个约 12 次请求（≈10 秒），超出的用 slug 兜底，避免同步被拖太久。
+const leetCodeSlugResolveLimit = 300
+
+// leetCodeFrontendIDs 把力扣的 titleSlug 批量换成前端展示的题号（questionFrontendId）。
+// 题库表存的就是题号，提交记录统一成题号后两边才能对上：看板显示 "1. Two Sum"
+// 而不是英文 slug，用户体验与"题号"直觉一致。
+// 用 GraphQL 别名批量查询（一次 25 个）；拿不到的保持 slug 兜底，不让同步失败。
+func (c *Client) leetCodeFrontendIDs(ctx context.Context, slugs []string) map[string]string {
+	result := make(map[string]string, len(slugs))
+	const perBatch = 25
+	for i := 0; i < len(slugs); i += perBatch {
+		if err := ctx.Err(); err != nil {
+			return result
+		}
+		end := i + perBatch
+		if end > len(slugs) {
+			end = len(slugs)
+		}
+		group := slugs[i:end]
+		q := "query{"
+		for j, s := range group {
+			q += fmt.Sprintf(" q%d: question(titleSlug:%q){ questionFrontendId }", j, s)
+		}
+		q += "}"
+		var out map[string]struct {
+			FrontendID string `json:"questionFrontendId"`
+		}
+		if err := c.postGraphQL(ctx, "https://leetcode.com/graphql", q, map[string]any{}, &out); err != nil {
+			// 整批失败就用 slug 兜底，不影响主流程
+			continue
+		}
+		for j, s := range group {
+			if v, ok := out[fmt.Sprintf("q%d", j)]; ok && v.FrontendID != "" {
+				result[s] = v.FrontendID
+			}
+		}
+	}
+	return result
 }
 
 func (c *Client) leetCodeProblems(ctx context.Context, page, limit int) ([]Problem, int, error) {
@@ -679,9 +774,11 @@ func (c *Client) leetCodeProblems(ctx context.Context, page, limit int) ([]Probl
 		List struct {
 			Total     int `json:"total"`
 			Questions []struct {
-				ID, Title, Slug string
-				Difficulty      string
-				Tags            []struct{ Name string }
+				FrontendID string                  `json:"questionFrontendId"`
+				Title      string                  `json:"title"`
+				Slug       string                  `json:"titleSlug"`
+				Difficulty string                  `json:"difficulty"`
+				Tags       []struct{ Name string } `json:"topicTags"`
 			} `json:"questions"`
 		} `json:"problemsetQuestionList"`
 	}
@@ -694,7 +791,7 @@ func (c *Client) leetCodeProblems(ctx context.Context, page, limit int) ([]Probl
 		for _, t := range x.Tags {
 			tags = append(tags, t.Name)
 		}
-		rows = append(rows, Problem{Platform: "leetcode", ID: x.ID, Title: x.Title, Difficulty: x.Difficulty, Tags: tags, URL: "https://leetcode.com/problems/" + x.Slug + "/"})
+		rows = append(rows, Problem{Platform: "leetcode", ID: x.FrontendID, Title: x.Title, Difficulty: x.Difficulty, Tags: tags, URL: "https://leetcode.com/problems/" + x.Slug + "/"})
 	}
 	return rows, out.List.Total, nil
 }
@@ -725,8 +822,11 @@ func (c *Client) atCoderProblems(ctx context.Context, page, limit int) ([]Proble
 
 func (c *Client) atCoderProblemsAll(ctx context.Context) ([]Problem, error) {
 	var raw []struct {
-		ID, Title, ContestID, ProblemIndex string
-		Tags                               []string
+		ID           string   `json:"id"`
+		Title        string   `json:"title"`
+		ContestID    string   `json:"contest_id"`
+		ProblemIndex string   `json:"problem_index"`
+		Tags         []string `json:"tags"`
 	}
 	if err := c.getJSON(ctx, "https://kenkoooo.com/atcoder/resources/merged-problems.json", &raw); err != nil {
 		return nil, err
@@ -852,13 +952,9 @@ func luoguCookieHeader(input string) string {
 }
 
 // logLuoguAuthHint 把"我们到底发了什么"打到终端，便于一眼看出是格式问题还是凭据问题。
-// 只打长度和开头几个字符，不落完整凭据。
+// 只打印 Cookie 的"名字(值长度)"摘要与总长度，绝不泄露凭据内容。
 func logLuoguAuthHint(endpoint, cookieHeader, upstreamMessage string) {
-	preview := cookieHeader
-	if len(preview) > 24 {
-		preview = preview[:24] + "…"
-	}
-	fmt.Printf("[luogu] %s 认证失败：%s（已发送 Cookie: %s，长度 %d）\n", endpoint, upstreamMessage, preview, len(cookieHeader))
+	fmt.Printf("[luogu] %s 认证失败：%s（已发送 Cookie 摘要 %s，总长度 %d）\n", endpoint, upstreamMessage, luoguCookieSummary(cookieHeader), len(cookieHeader))
 }
 
 // luoguData 取洛谷页面并解析 <script id="lentille-context"> 里的 data 对象。
@@ -895,7 +991,58 @@ func (c *Client) luoguDataWithHeader(ctx context.Context, path, cookieHeader str
 	return envelope.Data, nil
 }
 
+// mergeCookieHeader 把挑战下发的 cookie 片段合并进已有 Cookie 头，同名 cookie 取最新值，
+// 避免 C3VK 挑战多次下发后累积成 "C3VK=a; C3VK=b"。
+func mergeCookieHeader(existing string, challenge ...string) string {
+	if len(challenge) == 0 {
+		return existing
+	}
+	if existing == "" {
+		return strings.Join(challenge, "; ")
+	}
+	values := map[string]string{}
+	order := []string{}
+	for _, seg := range strings.Split(existing, ";") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		name, val, ok := strings.Cut(seg, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if _, seen := values[name]; !seen {
+			order = append(order, name)
+		}
+		values[name] = strings.TrimSpace(val)
+	}
+	for _, seg := range challenge {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		name, val, ok := strings.Cut(seg, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if _, seen := values[name]; !seen {
+			order = append(order, name)
+		}
+		values[name] = strings.TrimSpace(val)
+	}
+	parts := make([]string, 0, len(order))
+	for _, name := range order {
+		parts = append(parts, name+"="+values[name])
+	}
+	return strings.Join(parts, "; ")
+}
+
 // luoguGetText 处理 302 反爬挑战后返回页面正文与状态码。cookieHeader 是已规范化的 Cookie 头。
+//
+// 关键点：Client 上配置了 CheckRedirect，遇到同 host 的 302（C3VK 挑战）会停止自动跟随并
+// 把 302 响应交回这里，于是下面“读到新下发的 Set-Cookie、合并后重发”的逻辑才能真正生效。
 func (c *Client) luoguGetText(ctx context.Context, endpoint, cookieHeader string) (string, int, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		if err := c.waitForSlot(ctx, endpoint); err != nil {
@@ -926,11 +1073,8 @@ func (c *Client) luoguGetText(ctx context.Context, endpoint, cookieHeader string
 			if len(challenge) == 0 {
 				return "", res.StatusCode, fmt.Errorf("洛谷返回 %d 重定向但没有下发校验 cookie", res.StatusCode)
 			}
-			if cookieHeader == "" {
-				cookieHeader = strings.Join(challenge, "; ")
-			} else {
-				cookieHeader += "; " + strings.Join(challenge, "; ")
-			}
+			// 同名 cookie 取挑战最新值，避免重复累积
+			cookieHeader = mergeCookieHeader(cookieHeader, challenge...)
 			continue
 		}
 		return string(body), res.StatusCode, nil
@@ -961,6 +1105,17 @@ func luoguInt(v any) int {
 		return n
 	}
 	return 0
+}
+
+// luoguErrorCode 读取洛谷响应里的 errorCode，并返回它“是否存在”。
+// 洛谷正常成功响应一定显式带 "errorCode":0；若字段缺失，说明拿到的是反爬/错误页，
+// 不能当成 success（否则下游会静默返回 0 条）。
+func luoguErrorCode(data map[string]any) (int, bool) {
+	v, ok := data["errorCode"]
+	if !ok {
+		return 0, false
+	}
+	return luoguInt(v), true
 }
 
 // luoguVerdict 洛谷记录状态码 → 看板判定。
@@ -1050,7 +1205,12 @@ func (c *Client) luoguAuthedCookie(ctx context.Context, uid, cookie string) (str
 			reasons = append(reasons, at.label+"："+err.Error())
 			continue
 		}
-		if code := luoguInt(data["errorCode"]); code != 0 {
+		if code, present := luoguErrorCode(data); !present {
+			// errorCode 缺失：不是正常成功响应（通常是反爬/错误页），视为失败。
+			logLuoguAuthHint("/record/list "+at.label, at.header, "响应缺少 errorCode")
+			reasons = append(reasons, at.label+"：响应缺少 errorCode（可能为反爬拦截或错误页）")
+			continue
+		} else if code != 0 {
 			upstream := luoguString(data["errorMessage"])
 			logLuoguAuthHint("/record/list "+at.label, at.header, upstream)
 			reasons = append(reasons, fmt.Sprintf("%s：洛谷返回 %d %s", at.label, code, upstream))
@@ -1068,7 +1228,9 @@ func (c *Client) luoguProfile(ctx context.Context, uid string) (Profile, error) 
 	if err != nil {
 		return Profile{}, err
 	}
-	if code := luoguInt(data["errorCode"]); code != 0 {
+	if code, present := luoguErrorCode(data); !present {
+		return Profile{}, fmt.Errorf("洛谷：响应缺少 errorCode（可能为反爬拦截或错误页）")
+	} else if code != 0 {
 		return Profile{}, fmt.Errorf("洛谷：%s", luoguString(data["errorMessage"]))
 	}
 	user, _ := data["user"].(map[string]any)
@@ -1160,7 +1322,12 @@ func (c *Client) syncLuogu(ctx context.Context, cfg Config) (SyncResult, error) 
 		if err != nil {
 			return SyncResult{}, err
 		}
-		if code := luoguInt(data["errorCode"]); code != 0 {
+		if code, present := luoguErrorCode(data); !present {
+			// errorCode 缺失应当作失败而不是静默当成成功，否则会拿到空列表后
+			// 直接 break，静默返回 0 条记录。
+			logLuoguAuthHint("/record/list page="+strconv.Itoa(page), cookieHeader, "响应缺少 errorCode")
+			return SyncResult{}, fmt.Errorf("洛谷返回异常（缺少 errorCode，可能被反爬拦截）")
+		} else if code != 0 {
 			upstream := luoguString(data["errorMessage"])
 			logLuoguAuthHint("/record/list page="+strconv.Itoa(page), cookieHeader, upstream)
 			return SyncResult{}, fmt.Errorf("洛谷返回 %d %s", code, upstream)
@@ -1256,6 +1423,11 @@ func luoguRecordToSubmission(item map[string]any, uid string) (Submission, bool)
 	if submitSeconds == 0 {
 		submitSeconds = luoguInt(item["submitTime"])
 	}
+	if submitSeconds == 0 {
+		// 提交时间缺失，无法可靠排序/去重，丢弃该条（避免产生 1970 年脏记录）。
+		fmt.Printf("[luogu] 记录 %s 缺少提交时间，已跳过\n", rawID)
+		return Submission{}, false
+	}
 	submittedAt := time.Unix(int64(submitSeconds), 0)
 	extra := map[string]any{
 		"score": luoguInt(item["score"]), "uid": uid,
@@ -1273,20 +1445,52 @@ func luoguRecordToSubmission(item map[string]any, uid string) (Submission, bool)
 	}, true
 }
 
+// luoguProblemMeta 取洛谷题库分页元数据（perPage/total）。洛谷各页 perPage 一致，
+// 缓存 10 分钟，避免 AllProblems 逐页拉取时每页都重复请求第一页。
+func (c *Client) luoguProblemMeta(ctx context.Context) (perPage, total int, err error) {
+	c.luoguMetaMu.Lock()
+	if c.luoguPerPage > 0 && time.Since(c.luoguMetaAt) < 10*time.Minute {
+		pp, t := c.luoguPerPage, c.luoguTotal
+		c.luoguMetaMu.Unlock()
+		return pp, t, nil
+	}
+	c.luoguMetaMu.Unlock()
+	data, err := c.luoguData(ctx, "/problem/list?page=1&_contentOnly=1", "")
+	if err != nil {
+		return 0, 0, err
+	}
+	block, _ := data["problems"].(map[string]any)
+	if block == nil {
+		return 0, 0, fmt.Errorf("洛谷题库响应中没有找到公开数据")
+	}
+	perPage = luoguInt(block["perPage"])
+	total = luoguInt(block["count"])
+	if perPage <= 0 {
+		perPage = 50
+	}
+	c.luoguMetaMu.Lock()
+	c.luoguPerPage, c.luoguTotal, c.luoguMetaAt = perPage, total, time.Now()
+	c.luoguMetaMu.Unlock()
+	return perPage, total, nil
+}
+
 func (c *Client) luoguProblems(ctx context.Context, page, limit int) ([]Problem, int, error) {
 	// 洛谷题库页面将公开数据放在 lentille-context JSON script 中，读取页面
 	// 已提供的数据，不模拟提交，也不依赖登录态。
-	// 洛谷每页固定 50 条且不支持 page_size，这里把外部请求的 (page, limit)
-	// 换算成洛谷页码 + 页内偏移，保证前端分页与 total 对得上。
+	// 洛谷每页条数（perPage）由响应给出，必须用真实 perPage 计算页码与页内偏移，
+	// 不能用猜测值，否则两者不一致会错位漏题。
 	if limit < 1 {
 		limit = 30
 	}
-	perPageGuess := 50
+	perPage, total, err := c.luoguProblemMeta(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 	globalOffset := 0
 	if page > 1 {
 		globalOffset = (page - 1) * limit
 	}
-	luoguPage := globalOffset/perPageGuess + 1
+	luoguPage := globalOffset/perPage + 1
 	data, err := c.luoguData(ctx, fmt.Sprintf("/problem/list?page=%d&_contentOnly=1", luoguPage), "")
 	if err != nil {
 		return nil, 0, err
@@ -1294,10 +1498,6 @@ func (c *Client) luoguProblems(ctx context.Context, page, limit int) ([]Problem,
 	problemBlock, _ := data["problems"].(map[string]any)
 	if problemBlock == nil {
 		return nil, 0, fmt.Errorf("洛谷题库响应中没有找到公开数据")
-	}
-	perPage := luoguInt(problemBlock["perPage"])
-	if perPage <= 0 {
-		perPage = perPageGuess
 	}
 	rawList, _ := problemBlock["result"].([]any)
 	all := make([]struct {
@@ -1338,7 +1538,6 @@ func (c *Client) luoguProblems(ctx context.Context, page, limit int) ([]Problem,
 		difficulty := luoguDifficulties[item.Difficulty]
 		rows = append(rows, Problem{Platform: "luogu", ID: item.PID, Title: item.Name, Difficulty: difficulty, Tags: tags, URL: "https://www.luogu.com.cn/problem/" + item.PID})
 	}
-	total := luoguInt(problemBlock["count"])
 	if total == 0 {
 		total = len(rows)
 	}
