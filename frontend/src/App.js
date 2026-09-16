@@ -11,8 +11,7 @@ const PLATFORMS = {
   codeforces: { label: "Codeforces", short: "CF", dot: "bg-blue-500", color: "#06b6d4", handlePlaceholder: "用户名", cookie: false, canSync: true },
   leetcode:   { label: "LeetCode",   short: "LC", dot: "bg-amber-500", color: "#22c55e", handlePlaceholder: "用户名", cookie: true, cookiePlaceholder: "LEETCODE_SESSION", canSync: true },
   atcoder:    { label: "AtCoder",     short: "AT", dot: "bg-purple-500", color: "#a855f7", handlePlaceholder: "用户名", cookie: false, canSync: true },
-  luogu:      { label: "洛谷",        short: "LG", dot: "bg-sky-500", color: "#3b82f6", handlePlaceholder: "UID", cookie: true, cookiePlaceholder: "__client_id", canSync: true },
-  acwing:     { label: "AcWing",      short: "AW", dot: "bg-indigo-500", color: "#6366f1", handlePlaceholder: "空间 ID", cookie: true, cookiePlaceholder: "sessionid", canSync: false }
+  luogu:      { label: "洛谷",        short: "LG", dot: "bg-sky-500", color: "#3b82f6", handlePlaceholder: "UID", cookie: true, cookiePlaceholder: "__client_id", canSync: true }
 };
 
 // --- 各处筛选下拉的静态选项 ---
@@ -27,8 +26,7 @@ const SUB_PLATFORM_OPTIONS = [
   { value: "codeforces", label: PLATFORMS.codeforces.label },
   { value: "leetcode", label: PLATFORMS.leetcode.label },
   { value: "atcoder", label: PLATFORMS.atcoder.label },
-  { value: "luogu", label: PLATFORMS.luogu.label },
-  { value: "acwing", label: PLATFORMS.acwing.label }
+  { value: "luogu", label: PLATFORMS.luogu.label }
 ];
 const VERDICT_OPTIONS = [
   { value: "all", label: "全部状态" },
@@ -385,7 +383,7 @@ const app = createApp({
     const freshTokenName = ref("");
 
     // --- 平台多账号：同一平台可保存多个，单选启用 ---
-    // canSync：服务端能否拉取该平台的历史提交记录（AcWing 无公开接口，只能靠浏览器脚本）。
+    // canSync：服务端能否拉取该平台的历史提交记录（无公开接口的平台只能靠浏览器脚本）。
     // 占位符只写"填什么"，具体怎么拿统一放在设置页的「填写说明」里（见 index.html）。
     // 直接复用顶部 PLATFORMS 注册表（label/dot/handlePlaceholder/cookie/canSync 都已在那定义）。
     const platformMeta = PLATFORMS;

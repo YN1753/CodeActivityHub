@@ -15,7 +15,7 @@ func TestNormalizeStatuses(t *testing.T) {
 		{Platform: "codeforces", Status: "error",
 			Message: `Get "https://codeforces.com/api/user.info?handles=x": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`},
 		{Platform: "luogu", Status: "error", Message: "洛谷返回 401 请先登录"},
-		{Platform: "acwing", Status: "error", Message: "AcWing 公开用户接口需要登录态，提交记录请使用篡改猴脚本"},
+		{Platform: "leetcode", Status: "error", Message: "LeetCode 用户不存在：请填个人主页 URL 里 /u/ 后面那段用户名"},
 		{Platform: "atcoder", Status: "ok", Message: "从 AtCoder 获取 35 条提交"},
 	}
 	configured := map[string]bool{"codeforces": true, "luogu": true, "atcoder": true}

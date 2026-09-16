@@ -19,14 +19,12 @@ import (
 )
 
 type Config struct {
-	Platform     string
-	CFHandle     string
-	LuoguUID     string
-	LeetCode     string
-	AtCoder      string
-	AcWingID     string
-	LuoguCookie  string // kept for user-controlled authenticated requests only
-	AcWingCookie string
+	Platform    string
+	CFHandle    string
+	LuoguUID    string
+	LeetCode    string
+	AtCoder     string
+	LuoguCookie string // kept for user-controlled authenticated requests only
 	// LeetCodeCookie 是浏览器里复制来的整段 cookie（含 LEETCODE_SESSION）。
 	// 力扣的提交流水接口只在登录态下返回数据，所以历史同步依赖它；
 	// 不填也能用公开接口，但只能拿到最近 AC（国际站）或拿不到（中国站）。
@@ -279,8 +277,6 @@ func (c *Client) Verify(ctx context.Context, cfg Config) (Profile, error) {
 		return c.verifyAtCoder(ctx, cfg.AtCoder)
 	case "luogu":
 		return c.verifyLuogu(ctx, cfg)
-	case "acwing":
-		return c.verifyAcWing(ctx, cfg.AcWingID)
 	default:
 		return Profile{}, fmt.Errorf("不支持的平台: %s", cfg.Platform)
 	}
@@ -296,8 +292,6 @@ func (c *Client) SyncSubmissions(ctx context.Context, cfg Config) (SyncResult, e
 		return c.syncAtCoder(ctx, cfg.AtCoder)
 	case "luogu":
 		return c.syncLuogu(ctx, cfg)
-	case "acwing":
-		return c.syncAcWing(ctx, cfg.AcWingID)
 	default:
 		return SyncResult{}, fmt.Errorf("不支持的平台: %s", cfg.Platform)
 	}
@@ -1841,19 +1835,4 @@ func (c *Client) luoguProblems(ctx context.Context, page, limit int) ([]Problem,
 		total = len(rows)
 	}
 	return rows, total, nil
-}
-
-// verifyAcWing 目前 AcWing 没有公开校验接口，该平台不支持在线校验，
-// 因此不会发起任何上游请求；ctx 仅保留以与 Verify 的接口签名保持一致。
-func (c *Client) verifyAcWing(_ context.Context, uid string) (Profile, error) {
-	if strings.TrimSpace(uid) == "" {
-		return Profile{}, fmt.Errorf("AcWing 用户 ID 不能为空")
-	}
-	// AcWing 的接口形态尚未核实（登录态要求、是否有可读的用户页），
-	// 先如实标成"不支持在线校验"，等拿到真实响应再按洛谷的方式适配。
-	return Profile{Platform: "acwing", Handle: uid}, fmt.Errorf("%w：暂未适配 AcWing 的用户接口，提交记录请使用浏览器脚本接入", ErrUnsupportedVerify)
-}
-func (c *Client) syncAcWing(ctx context.Context, uid string) (SyncResult, error) {
-	_, err := c.verifyAcWing(ctx, uid)
-	return SyncResult{}, err
 }

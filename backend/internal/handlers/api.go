@@ -84,9 +84,7 @@ type verifyRequest struct {
 	LuoguUID       string `json:"luogu_uid"`
 	LeetCode       string `json:"leetcode_username"`
 	AtCoder        string `json:"atcoder_handle"`
-	AcWingID       string `json:"acwing_user_id"`
 	LuoguCookie    string `json:"luogu_cookie"`
-	AcWingCookie   string `json:"acwing_cookie"`
 	LeetCodeCookie string `json:"leetcode_cookie"`
 }
 type ingestRequest struct {
@@ -595,10 +593,9 @@ func (a *API) configuredPlatforms(uid uint) map[string]bool {
 	cfg := platforms.Config{
 		CFHandle: values["cf_handle"], LuoguUID: values["luogu_uid"],
 		LeetCode: values["leetcode_username"], AtCoder: values["atcoder_handle"],
-		AcWingID: values["acwing_user_id"],
 	}
 	out := map[string]bool{}
-	for _, name := range []string{"codeforces", "leetcode", "atcoder", "luogu", "acwing"} {
+	for _, name := range []string{"codeforces", "leetcode", "atcoder", "luogu"} {
 		out[name] = platformConfigured(cfg, name)
 	}
 	return out
@@ -639,8 +636,8 @@ func (a *API) GetSettings(c *gin.Context) {
 // 避免任意 key 被写进 user_configs（例如覆盖其他模块使用的键、注入脏数据）。
 var allowedSettingKeys = map[string]bool{
 	"cf_handle": true, "luogu_uid": true, "leetcode_username": true,
-	"atcoder_handle": true, "acwing_user_id": true,
-	"luogu_cookie": true, "acwing_cookie": true, "leetcode_cookie": true,
+	"atcoder_handle": true,
+	"luogu_cookie":   true, "leetcode_cookie": true,
 }
 
 func (a *API) UpdateSettings(c *gin.Context) {
@@ -688,19 +685,18 @@ func (a *API) loadPlatformConfig(uid uint, platform string) platforms.Config {
 	return platforms.Config{
 		Platform: platform, CFHandle: values["cf_handle"], LuoguUID: values["luogu_uid"],
 		LeetCode: values["leetcode_username"], AtCoder: values["atcoder_handle"],
-		AcWingID: values["acwing_user_id"], LuoguCookie: values["luogu_cookie"],
-		AcWingCookie: values["acwing_cookie"], LeetCodeCookie: values["leetcode_cookie"],
+		LuoguCookie: values["luogu_cookie"], LeetCodeCookie: values["leetcode_cookie"],
 	}
 }
 
 func (a *API) configFromVerify(req verifyRequest) platforms.Config {
 	return platforms.Config{Platform: req.Platform, CFHandle: req.CFHandle, LuoguUID: req.LuoguUID,
-		LeetCode: req.LeetCode, AtCoder: req.AtCoder, AcWingID: req.AcWingID,
-		LuoguCookie: req.LuoguCookie, AcWingCookie: req.AcWingCookie, LeetCodeCookie: req.LeetCodeCookie}
+		LeetCode: req.LeetCode, AtCoder: req.AtCoder,
+		LuoguCookie: req.LuoguCookie, LeetCodeCookie: req.LeetCodeCookie}
 }
 
 // platformSupportsOnlineVerify 标出哪些平台有公开的在线校验 / 历史同步能力
-// （Codeforces / LeetCode / AtCoder / 洛谷；AcWing 暂未适配）。
+// （Codeforces / LeetCode / AtCoder / 洛谷）。
 // 注意：账号校验与历史同步目前口径一致，若将来分化需拆开。
 func platformSupportsOnlineVerify(platform string) bool {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
@@ -732,8 +728,6 @@ func platformConfigured(cfg platforms.Config, platform string) bool {
 		return strings.TrimSpace(cfg.AtCoder) != ""
 	case "luogu":
 		return strings.TrimSpace(cfg.LuoguUID) != ""
-	case "acwing":
-		return strings.TrimSpace(cfg.AcWingID) != ""
 	}
 	return false
 }
@@ -811,7 +805,7 @@ func (a *API) ManualSync(c *gin.Context) {
 	if requested == "" {
 		requested = "all"
 	}
-	valid := map[string]bool{"codeforces": true, "leetcode": true, "atcoder": true, "luogu": true, "acwing": true}
+	valid := map[string]bool{"codeforces": true, "leetcode": true, "atcoder": true, "luogu": true}
 	if requested != "all" && !valid[requested] {
 		jsonError(c, 400, "不支持的平台: "+requested)
 		return
@@ -823,7 +817,7 @@ func (a *API) ManualSync(c *gin.Context) {
 	uid := userID(c)
 	platformList := []string{requested}
 	if requested == "all" {
-		platformList = []string{"codeforces", "leetcode", "atcoder", "luogu", "acwing"}
+		platformList = []string{"codeforces", "leetcode", "atcoder", "luogu"}
 	}
 	// 并发保护：同一用户的同一平台只允许一个同步在跑，连点直接返回 409，
 	// 避免多个最长 150s 的同步并发打接口、并发写库。
@@ -900,10 +894,9 @@ func (a *API) ManualSync(c *gin.Context) {
 		jsonError(c, 400, "请先在设置中配置至少一个平台账号")
 		return
 	}
-	// 只配置了 AcWing 时不能报"同步完成"：它没有公开的历史接口，
-	// 用户会以为真的同步过了。（洛谷已支持：走页面内嵌的 lentille 数据）
+	// 没有任何平台真的参与同步时不报"同步完成"
 	if failed == 0 && attempted == 0 {
-		jsonError(c, 400, "尚未配置支持历史同步的平台（洛谷 / Codeforces / LeetCode / AtCoder）；AcWing 请使用浏览器脚本实时接入")
+		jsonError(c, 400, "尚未配置支持历史同步的平台（洛谷 / Codeforces / LeetCode / AtCoder）")
 		return
 	}
 	c.JSON(200, gin.H{"success": failed == 0, "data": gin.H{"mode": "manual", "platform": requested, "synced": total, "results": results, "synced_at": nowUTC(), "message": fmt.Sprintf("手动同步完成，写入 %d 条提交记录", total)}})
@@ -924,7 +917,7 @@ func (a *API) Verify(c *gin.Context) {
 	defer cancel()
 	profile, err := a.platformClient().Verify(ctx, a.configFromVerify(req))
 	if err != nil {
-		// 洛谷/AcWing 没有公开校验接口：这是"不支持"，不是"连接失败"。
+		// 平台没有公开校验接口时返回 ErrUnsupportedVerify：这是"不支持"，不是"连接失败"。
 		// 若记成 error，设置页会挂一条用户永远清不掉的告警。
 		if errors.Is(err, platforms.ErrUnsupportedVerify) {
 			a.savePlatformStatus(userID(c), platforms.Profile{Platform: platform}, "unsupported", err.Error(), 0)
@@ -972,7 +965,6 @@ var platformMeta = map[string]struct {
 	"leetcode":   {"leetcode_username", "leetcode_cookie", "LeetCode"},
 	"atcoder":    {"atcoder_handle", "", "AtCoder"},
 	"luogu":      {"luogu_uid", "luogu_cookie", "洛谷"},
-	"acwing":     {"acwing_user_id", "acwing_cookie", "AcWing"},
 }
 
 // UpdateAccount 编辑已保存账号的备注名 / 用户名 / Cookie。
@@ -1164,7 +1156,7 @@ func (a *API) CreateAccount(c *gin.Context) {
 func (a *API) verifyAccountRow(acc *models.PlatformAccount) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	cfg := platforms.Config{Platform: acc.Platform, CFHandle: acc.Handle, LuoguUID: acc.Handle, LeetCode: acc.Handle, AtCoder: acc.Handle, AcWingID: acc.Handle, LuoguCookie: acc.Cookie, AcWingCookie: acc.Cookie, LeetCodeCookie: acc.Cookie}
+	cfg := platforms.Config{Platform: acc.Platform, CFHandle: acc.Handle, LuoguUID: acc.Handle, LeetCode: acc.Handle, AtCoder: acc.Handle, LuoguCookie: acc.Cookie, LeetCodeCookie: acc.Cookie}
 	profile, err := a.platformClient().Verify(ctx, cfg)
 	if err != nil {
 		if errors.Is(err, platforms.ErrUnsupportedVerify) {

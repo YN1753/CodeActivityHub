@@ -82,7 +82,6 @@
               <span class="flex items-center gap-1"><span :class="['dot', 'dot-' + getStatusClass('codeforces')]"></span>CF {{ overview.stats.platforms?.codeforces?.ac || 0 }}</span>
               <span class="flex items-center gap-1"><span :class="['dot', 'dot-' + getStatusClass('atcoder')]"></span>AT {{ overview.stats.platforms?.atcoder?.ac || 0 }}</span>
               <span class="flex items-center gap-1"><span :class="['dot', 'dot-' + getStatusClass('luogu')]"></span>LG {{ overview.stats.platforms?.luogu?.ac || 0 }}</span>
-              <span class="flex items-center gap-1"><span :class="['dot', 'dot-' + getStatusClass('acwing')]"></span>AW {{ overview.stats.platforms?.acwing?.ac || 0 }}</span>
             </div>
 
             <button @click="syncNow('all')" :disabled="isSyncing" class="btn-primary h-8 px-3 flex items-center gap-1.5">
@@ -238,7 +237,7 @@
               </div>
               <div ref="platformWrap" class="relative mt-3">
                 <div class="h-2.5 rounded-full bg-slate-100 overflow-hidden flex items-center" @mouseleave="hideMiniTip">
-                  <div v-for="p in [['codeforces','CF','Codeforces','bg-blue-500','bg-blue-600'],['luogu','LG','洛谷','bg-sky-500','bg-sky-600'],['atcoder','AT','AtCoder','bg-purple-500','bg-purple-600'],['acwing','AW','AcWing','bg-indigo-500','bg-indigo-600']]"
+                  <div v-for="p in [['codeforces','CF','Codeforces','bg-blue-500','bg-blue-600'],['luogu','LG','洛谷','bg-sky-500','bg-sky-600'],['atcoder','AT','AtCoder','bg-purple-500','bg-purple-600']]"
                        :key="p[0]"
                        :class="platformSegClass(p)"
                        class="cursor-default transition-all duration-150"
@@ -259,7 +258,7 @@
                 </div>
               </div>
               <div class="mt-auto pt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-mono text-slate-500">
-                <span v-for="p in [['codeforces','CF'],['luogu','LG'],['atcoder','AT'],['acwing','AW']]" :key="p[0]"
+                <span v-for="p in [['codeforces','CF'],['luogu','LG'],['atcoder','AT']]" :key="p[0]"
                       class="flex items-center gap-1">
                   <span :class="['dot', 'dot-' + getStatusClass(p[0])]"></span>{{ p[1] }} {{ overview.stats.platforms?.[p[0]]?.ac || 0 }}
                 </span>
@@ -278,7 +277,7 @@
                            @update:model-value="setHeatmapYear"></ui-select>
                 <span v-else class="pill pill-muted">{{ selectedHeatmapYear }} 年</span>
                 <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
-                  <button v-for="p in [['all','全部'],['codeforces','CF'],['leetcode','LC'],['atcoder','AT'],['luogu','LG'],['acwing','AW']]"
+                  <button v-for="p in [['all','全部'],['codeforces','CF'],['leetcode','LC'],['atcoder','AT'],['luogu','LG']]"
                           :key="p[0]" @click="setHeatmapFilter(p[0])"
                           :class="['px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors',
                                    heatmapFilter === p[0] ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800']">{{ p[1] }}</button>
@@ -820,11 +819,6 @@
                             <td class="py-1 pr-4">洛谷</td>
                             <td class="py-1 pr-4">纯数字 UID</td>
                             <td class="py-1">需要 <code>__client_id</code>：同样方式复制整段 cookie（UID 会自动补上）</td>
-                          </tr>
-                          <tr>
-                            <td class="py-1 pr-4">AcWing</td>
-                            <td class="py-1 pr-4">空间 ID</td>
-                            <td class="py-1">无需填写（只能用浏览器脚本接入）</td>
                           </tr>
                         </tbody>
                       </table>
