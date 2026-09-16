@@ -95,7 +95,7 @@ type PlatformAccount struct {
 
 type Submission struct {
 	ID              string    `gorm:"primaryKey;size:255" json:"id"`
-	UserID          uint      `gorm:"uniqueIndex:idx_submission_user_platform_raw;index:idx_submission_user_platform_problem;not null" json:"-"`
+	UserID          uint      `gorm:"uniqueIndex:idx_submission_user_platform_raw;index:idx_submission_user_platform_problem;index:idx_submission_user_date;index:idx_submission_user_submitted;not null" json:"-"`
 	Platform        string    `gorm:"uniqueIndex:idx_submission_user_platform_raw;index:idx_submission_user_platform_problem;size:32;not null" json:"platform"`
 	RawID           string    `gorm:"uniqueIndex:idx_submission_user_platform_raw;size:255;not null" json:"raw_id"`
 	ProblemID       string    `gorm:"index:idx_submission_user_platform_problem" json:"problem_id"`

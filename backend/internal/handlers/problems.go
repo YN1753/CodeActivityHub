@@ -108,6 +108,7 @@ func (a *API) Problems(c *gin.Context) {
 	if page < 1 {
 		page = 1
 	}
+	// 题库单页上限 100：前端分页足够，同时避免一次拉爆内存/前端渲染卡顿。
 	if limit < 1 || limit > 100 {
 		limit = 30
 	}
@@ -264,7 +265,7 @@ func (a *API) runProblemSync(platform string) {
 	defer cancel()
 
 	var callbackErr error
-	retErr := a.Platforms.AllProblems(ctx, platform, func(rows []platforms.Problem, done, total int) {
+	retErr := a.platformClient().AllProblems(ctx, platform, func(rows []platforms.Problem, done, total int) {
 		a.syncMgr().progress(platform, done, total)
 		if err := a.saveProblems(platform, rows); err != nil {
 			callbackErr = err

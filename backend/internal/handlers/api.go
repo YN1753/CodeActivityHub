@@ -248,6 +248,7 @@ func (a *API) Login(c *gin.Context) {
 func loginRateAllow(ip, username string) bool {
 	loginLimitMu.Lock()
 	defer loginLimitMu.Unlock()
+	loginRateSweep()
 	key := ip + "\x00" + username
 	now := time.Now()
 	at, ok := loginAttempts[key]
@@ -262,6 +263,7 @@ func loginRateAllow(ip, username string) bool {
 func loginRateFail(ip, username string) {
 	loginLimitMu.Lock()
 	defer loginLimitMu.Unlock()
+	loginRateSweep()
 	key := ip + "\x00" + username
 	now := time.Now()
 	at, ok := loginAttempts[key]
@@ -276,7 +278,20 @@ func loginRateFail(ip, username string) {
 func loginRateReset(ip, username string) {
 	loginLimitMu.Lock()
 	defer loginLimitMu.Unlock()
+	loginRateSweep()
 	delete(loginAttempts, ip+"\x00"+username)
+}
+
+// loginRateSweep 清理已超过滑动窗口、不再参与限流的失败计数，避免 loginAttempts
+// 无限增长（原实现只在成功登录时 delete，失败条目永不回收）。
+// 仅在已持 loginLimitMu 时调用。
+func loginRateSweep() {
+	now := time.Now()
+	for key, at := range loginAttempts {
+		if now.Sub(at.firstSeen) > loginFailWindow {
+			delete(loginAttempts, key)
+		}
+	}
 }
 
 func validUsername(name string) bool {
@@ -342,7 +357,9 @@ func (a *API) ChangePassword(c *gin.Context) {
 		jsonError(c, 500, "密码处理失败")
 		return
 	}
-	a.DB.Model(&user).Updates(map[string]any{"password_hash": hash, "salt": salt})
+	if err := a.DB.Model(&user).Updates(map[string]any{"password_hash": hash, "salt": salt}).Error; err != nil {
+		log.Printf("改密写入失败 uid=%d: %v", user.ID, err)
+	}
 	a.DB.Delete(&models.Session{}, "user_id = ?", user.ID)
 	// 改密码应该让所有脚本 token 一起失效，否则"改了密码脚本照样能提交"。
 	a.revokeAllIngestTokens(user.ID)
@@ -553,20 +570,28 @@ func queryLimit(c *gin.Context, fallback int) int {
 	if n <= 0 {
 		n = fallback
 	}
+	// 绝对上限 10000：保护数据库，避免一次拉取过多行拖垮查询（与题库分页的 100 不同口径）。
 	if n > 10000 {
 		n = 10000
 	}
 	return n
 }
 
-// configuredPlatforms 一次读出该用户各平台是否已配置账号。
-func (a *API) configuredPlatforms(uid uint) map[string]bool {
-	var rows []models.UserConfig
-	a.DB.Where("user_id = ?", uid).Find(&rows)
+// loadConfigMap 读某用户的全部 user_configs，组装成 key→value 映射。
+// 各读配置处逻辑一致（仅按 user_id 过滤），统一走这里，避免散落重复。
+func loadConfigMap(db *gorm.DB, uid uint) map[string]string {
 	values := map[string]string{}
+	var rows []models.UserConfig
+	db.Where("user_id = ?", uid).Find(&rows)
 	for _, row := range rows {
 		values[row.Key] = row.Value
 	}
+	return values
+}
+
+// configuredPlatforms 一次读出该用户各平台是否已配置账号。
+func (a *API) configuredPlatforms(uid uint) map[string]bool {
+	values := loadConfigMap(a.DB, uid)
 	cfg := platforms.Config{
 		CFHandle: values["cf_handle"], LuoguUID: values["luogu_uid"],
 		LeetCode: values["leetcode_username"], AtCoder: values["atcoder_handle"],
@@ -599,12 +624,7 @@ func normalizeStatuses(statuses []models.PlatformStatus, configured map[string]b
 }
 
 func (a *API) GetSettings(c *gin.Context) {
-	var configs []models.UserConfig
-	a.DB.Where("user_id = ?", userID(c)).Find(&configs)
-	values := map[string]string{}
-	for _, row := range configs {
-		values[row.Key] = row.Value
-	}
+	values := loadConfigMap(a.DB, userID(c))
 	var statuses []models.PlatformStatus
 	a.DB.Where("user_id = ?", userID(c)).Find(&statuses)
 	statuses = normalizeStatuses(statuses, a.configuredPlatforms(userID(c)))
@@ -664,12 +684,7 @@ func (a *API) platformClient() *platforms.Client {
 }
 
 func (a *API) loadPlatformConfig(uid uint, platform string) platforms.Config {
-	values := map[string]string{}
-	var rows []models.UserConfig
-	a.DB.Where("user_id = ?", uid).Find(&rows)
-	for _, row := range rows {
-		values[row.Key] = row.Value
-	}
+	values := loadConfigMap(a.DB, uid)
 	return platforms.Config{
 		Platform: platform, CFHandle: values["cf_handle"], LuoguUID: values["luogu_uid"],
 		LeetCode: values["leetcode_username"], AtCoder: values["atcoder_handle"],
@@ -684,19 +699,10 @@ func (a *API) configFromVerify(req verifyRequest) platforms.Config {
 		LuoguCookie: req.LuoguCookie, AcWingCookie: req.AcWingCookie, LeetCodeCookie: req.LeetCodeCookie}
 }
 
-// verifySupported 标出哪些平台能通过公开接口或已配置的 Cookie 完成在线校验。
-// 洛谷用公开用户主页校验 UID（提交记录才需要 Cookie），AcWing 尚未适配。
-func verifySupported(platform string) bool {
-	switch strings.ToLower(strings.TrimSpace(platform)) {
-	case "codeforces", "leetcode", "atcoder", "luogu":
-		return true
-	}
-	return false
-}
-
-// historySyncSupported 标出哪些平台能拉取历史提交。
-// 洛谷的提交记录接口需要 __client_id Cookie，缺少时由 platformReadyForHistorySync 判定为跳过。
-func historySyncSupported(platform string) bool {
+// platformSupportsOnlineVerify 标出哪些平台有公开的在线校验 / 历史同步能力
+// （Codeforces / LeetCode / AtCoder / 洛谷；AcWing 暂未适配）。
+// 注意：账号校验与历史同步目前口径一致，若将来分化需拆开。
+func platformSupportsOnlineVerify(platform string) bool {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "codeforces", "leetcode", "atcoder", "luogu":
 		return true
@@ -707,7 +713,7 @@ func historySyncSupported(platform string) bool {
 // platformReadyForHistorySync 判断某平台当前配置能不能真的拉历史，
 // 不能则给出一条说明（用于跳过而不是报错，避免设置页挂上无法消除的告警）。
 func platformReadyForHistorySync(platform string, cfg platforms.Config) (bool, string) {
-	if !historySyncSupported(platform) {
+	if !platformSupportsOnlineVerify(platform) {
 		return false, "该平台无公开历史提交接口，提交记录请使用浏览器脚本实时接入"
 	}
 	if platform == "luogu" && strings.TrimSpace(cfg.LuoguCookie) == "" {
@@ -810,7 +816,7 @@ func (a *API) ManualSync(c *gin.Context) {
 		jsonError(c, 400, "不支持的平台: "+requested)
 		return
 	}
-	if requested != "all" && !historySyncSupported(requested) {
+	if requested != "all" && !platformSupportsOnlineVerify(requested) {
 		jsonError(c, 400, requested+" 无公开历史提交接口，提交记录请使用浏览器脚本实时接入")
 		return
 	}
@@ -1015,8 +1021,12 @@ func (a *API) UpdateAccount(c *gin.Context) {
 		return
 	}
 	if req.Select != nil && *req.Select && !acc.Selected {
-		a.DB.Model(&models.PlatformAccount{}).Where("user_id = ? AND platform = ?", acc.UserID, acc.Platform).Update("selected", false)
-		a.DB.Model(acc).Update("selected", true)
+		if err := a.DB.Model(&models.PlatformAccount{}).Where("user_id = ? AND platform = ?", acc.UserID, acc.Platform).Update("selected", false).Error; err != nil {
+			log.Printf("切换 selected 失败 uid=%d platform=%s: %v", acc.UserID, acc.Platform, err)
+		}
+		if err := a.DB.Model(acc).Update("selected", true).Error; err != nil {
+			log.Printf("切换 selected 失败 uid=%d platform=%s: %v", acc.UserID, acc.Platform, err)
+		}
 		acc.Selected = true
 	}
 	if req.Verify {
@@ -1043,7 +1053,7 @@ func accountResponse(acc models.PlatformAccount) gin.H {
 	status := acc.Status
 	// 平台没有在线校验能力时，历史数据里残留的 error 其实是"不支持校验"，
 	// 不该在账号列表里一直飘红（这类平台只能靠浏览器脚本接入）。
-	if status == "error" && !verifySupported(acc.Platform) {
+	if status == "error" && !platformSupportsOnlineVerify(acc.Platform) {
 		status = "unsupported"
 	}
 	return gin.H{"id": acc.ID, "platform": acc.Platform, "name": acc.Name, "handle": acc.Handle,
@@ -1161,8 +1171,9 @@ func (a *API) verifyAccountRow(acc *models.PlatformAccount) {
 			// 平台本身不支持在线校验：账号信息照常保存，只是标记为"未校验"，
 			// 不要写成 error 让列表一直飘红。
 			message := truncate(err.Error(), 255)
-			a.DB.Model(acc).Updates(map[string]any{"verified": false, "status": "unsupported", "message": message, "last_checked_at": nowUTC()})
-			acc.Verified, acc.Status, acc.Message, acc.LastCheckedAt = false, "unsupported", message, nowUTC()
+			now := nowUTC()
+			a.DB.Model(acc).Updates(map[string]any{"verified": false, "status": "unsupported", "message": message, "last_checked_at": now})
+			acc.Verified, acc.Status, acc.Message, acc.LastCheckedAt = false, "unsupported", message, now
 			return
 		}
 		message := truncate(err.Error(), 255)
@@ -1170,12 +1181,14 @@ func (a *API) verifyAccountRow(acc *models.PlatformAccount) {
 			// 超时是瞬时的：配置照常保存，标记为 warning，避免账号列表飘红。
 			// 注意这里只写库，HTTP 响应由调用方（VerifyAccount）负责。
 			hint := "验证请求超时，账号配置已保存，可稍后点「验证」重试"
-			a.DB.Model(acc).Updates(map[string]any{"verified": false, "status": "warning", "message": hint, "last_checked_at": nowUTC()})
-			acc.Verified, acc.Status, acc.Message, acc.LastCheckedAt = false, "warning", hint, nowUTC()
+			now := nowUTC()
+			a.DB.Model(acc).Updates(map[string]any{"verified": false, "status": "warning", "message": hint, "last_checked_at": now})
+			acc.Verified, acc.Status, acc.Message, acc.LastCheckedAt = false, "warning", hint, now
 			return
 		}
-		a.DB.Model(acc).Updates(map[string]any{"verified": false, "status": "error", "message": message, "last_checked_at": nowUTC()})
-		acc.Status, acc.Message, acc.Verified, acc.LastCheckedAt = "error", message, false, nowUTC()
+		now := nowUTC()
+		a.DB.Model(acc).Updates(map[string]any{"verified": false, "status": "error", "message": message, "last_checked_at": now})
+		acc.Status, acc.Message, acc.Verified, acc.LastCheckedAt = "error", message, false, now
 		return
 	}
 	message := "账号验证成功"
@@ -1183,11 +1196,12 @@ func (a *API) verifyAccountRow(acc *models.PlatformAccount) {
 		message = profile.Note
 	}
 	message = truncate(message, 255)
+	now := nowUTC()
 	if err := a.DB.Model(acc).Updates(map[string]any{"verified": true, "status": "ok", "message": message,
-		"rating": profile.Rating, "solved": profile.Solved, "last_checked_at": nowUTC()}).Error; err != nil {
+		"rating": profile.Rating, "solved": profile.Solved, "last_checked_at": now}).Error; err != nil {
 		return
 	}
-	acc.Verified, acc.Status, acc.Message, acc.Rating, acc.Solved, acc.LastCheckedAt = true, "ok", message, profile.Rating, profile.Solved, nowUTC()
+	acc.Verified, acc.Status, acc.Message, acc.Rating, acc.Solved, acc.LastCheckedAt = true, "ok", message, profile.Rating, profile.Solved, now
 }
 
 func (a *API) loadAccount(c *gin.Context) (*models.PlatformAccount, bool) {
@@ -1261,14 +1275,7 @@ func SeedPlatformAccounts(db *gorm.DB) {
 		return
 	}
 	for _, user := range users {
-		var configs []models.UserConfig
-		if err := db.Where("user_id = ?", user.ID).Find(&configs).Error; err != nil {
-			continue
-		}
-		values := map[string]string{}
-		for _, row := range configs {
-			values[row.Key] = row.Value
-		}
+		values := loadConfigMap(db, user.ID)
 		for platform, meta := range platformMeta {
 			handle := strings.TrimSpace(values[meta.HandleKey])
 			if handle == "" {
@@ -1287,10 +1294,8 @@ func SeedPlatformAccounts(db *gorm.DB) {
 			account := models.PlatformAccount{UserID: user.ID, Platform: platform, Name: "默认账号", Handle: truncate(handle, 255),
 				Cookie: values[meta.CookieKey], Selected: true, Verified: verified,
 				Status: map[bool]string{true: "ok", false: "unverified"}[verified], Message: "由旧版配置迁移"}
-			if err := db.Create(&account).Error; err == nil {
-				// 立即启用，保证 user_configs 与账号记录一致。
-				db.Model(&account).Update("selected", true)
-			}
+			// Selected 已在 Create 时一并写入，无需二次 Update。
+			db.Create(&account)
 		}
 	}
 }
@@ -1360,8 +1365,8 @@ func (a *API) ListIngestTokens(c *gin.Context) {
 	result := make([]gin.H, 0, len(rows))
 	for _, row := range rows {
 		row.TokenHash = ""
-		result = append(result, gin.H{"id": row.ID, "name": row.Name, "token_hint": row.TokenHint,
-			"created_at": row.CreatedAt, "last_used_at": row.LastUsedAt, "revoked_at": row.RevokedAt})
+		// 列表不返回明文：token 字段统一为空字符串（与创建/轮换接口区分）。
+		result = append(result, ingestTokenResponse(row, ""))
 	}
 	c.JSON(200, gin.H{"tokens": result})
 }
@@ -1384,8 +1389,6 @@ func (a *API) CreateIngestToken(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "message": "Token 已生成，请立即复制保存（之后不再显示明文）",
 		"token": ingestTokenResponse(row, plain)})
 }
-
-// createIngestTokenWithPlain 已合并进 issueIngestToken
 
 func (a *API) RotateIngestToken(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -1438,15 +1441,32 @@ func (a *API) RevokeIngestToken(c *gin.Context) {
 
 // revokeAllIngestTokens 改密码时连带吊销，避免"改了密码脚本还能用"。
 func (a *API) revokeAllIngestTokens(uid uint) {
-	a.DB.Model(&models.IngestToken{}).Where("user_id = ? AND revoked_at = ''", uid).Update("revoked_at", nowUTC())
+	if err := a.DB.Model(&models.IngestToken{}).Where("user_id = ? AND revoked_at = ''", uid).Update("revoked_at", nowUTC()).Error; err != nil {
+		log.Printf("批量吊销 ingest token 失败 uid=%d: %v", uid, err)
+	}
 }
+
+// ingestSubmissions 顺序写入一批提交，遇到首个错误即返回（已插入条数, 错误）。
+// 单条与批量 ingest 共用此循环，仅响应字段不同（见两个 handler）。
+func (a *API) ingestSubmissions(uid uint, items []ingestRequest) (int, error) {
+	inserted := 0
+	for _, item := range items {
+		n, err := a.saveSubmission(uid, item)
+		if err != nil {
+			return inserted, err
+		}
+		inserted += n
+	}
+	return inserted, nil
+}
+
 func (a *API) IngestSubmission(c *gin.Context) {
 	var req ingestRequest
 	if c.ShouldBindJSON(&req) != nil {
 		jsonError(c, 400, "请求格式错误")
 		return
 	}
-	inserted, err := a.saveSubmission(userID(c), req)
+	inserted, err := a.ingestSubmissions(userID(c), []ingestRequest{req})
 	if err != nil {
 		jsonError(c, 500, "提交记录保存失败")
 		log.Printf("ingest 写入失败: %v", err)
@@ -1460,15 +1480,11 @@ func (a *API) IngestBatch(c *gin.Context) {
 		jsonError(c, 400, "请求格式错误")
 		return
 	}
-	inserted := 0
-	for _, item := range req.Submissions {
-		n, err := a.saveSubmission(userID(c), item)
-		if err != nil {
-			jsonError(c, 500, "提交记录保存失败")
-			log.Printf("ingest 写入失败: %v", err)
-			return
-		}
-		inserted += n
+	inserted, err := a.ingestSubmissions(userID(c), req.Submissions)
+	if err != nil {
+		jsonError(c, 500, "提交记录保存失败")
+		log.Printf("ingest 写入失败: %v", err)
+		return
 	}
 	c.JSON(200, gin.H{"success": true, "inserted": inserted, "received": len(req.Submissions)})
 }

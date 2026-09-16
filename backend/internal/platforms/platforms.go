@@ -340,6 +340,7 @@ func (c *Client) Problems(ctx context.Context, platform string, page, limit int)
 	if page < 1 {
 		page = 1
 	}
+	// 题库单页上限 100（默认 30）：与前端 /api/problems 的分页口径保持一致。
 	if limit < 1 || limit > 100 {
 		limit = 30
 	}
@@ -420,29 +421,6 @@ func (c *Client) contestsFromUpstream(ctx context.Context, platform string) ([]C
 }
 
 func normalize(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
-
-func (c *Client) getText(ctx context.Context, endpoint string) (string, error) {
-	if err := c.waitForSlot(ctx, endpoint); err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "text/html,application/json")
-	req.Header.Set("User-Agent", "CodeActivityHub/1.0")
-	res, err := c.HTTP.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
-		return "", fmt.Errorf("上游响应 %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
-	}
-	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
-	return string(body), err
-}
 
 func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 	if err := c.waitForSlot(ctx, endpoint); err != nil {
@@ -1162,30 +1140,11 @@ func (c *Client) syncAtCoder(ctx context.Context, handle string) (SyncResult, er
 			verdict = "UNKNOWN"
 		}
 		rows = append(rows, Submission{RawID: strconv.Itoa(item.ID), ProblemID: item.ProblemID, ProblemTitle: item.ProblemID,
-			Verdict: atCoderVerdict(verdict), Score: int(item.Point), SubmittedAt: time.Unix(item.EpochSecond, 0),
+			Verdict: verdict, Score: int(item.Point), SubmittedAt: time.Unix(item.EpochSecond, 0),
 			URL: "https://atcoder.jp/contests/" + item.ContestID + "/submissions/" + strconv.Itoa(item.ID), Language: item.ProgrammingLanguage,
 			Extra: map[string]any{"contest_id": item.ContestID, "result": item.Result, "point": item.Point}})
 	}
 	return SyncResult{Platform: "atcoder", Profile: profile, Submissions: rows, Message: fmt.Sprintf("从 AtCoder 获取 %d 条提交", len(rows))}, nil
-}
-
-func atCoderVerdict(v string) string {
-	switch v {
-	case "AC":
-		return "AC"
-	case "WA":
-		return "WA"
-	case "TLE":
-		return "TLE"
-	case "MLE":
-		return "MLE"
-	case "CE":
-		return "CE"
-	case "RE":
-		return "RE"
-	default:
-		return v
-	}
 }
 
 // ErrUnsupportedVerify 表示该平台没有可用的公开校验接口。
@@ -1813,6 +1772,8 @@ func (c *Client) luoguProblems(ctx context.Context, page, limit int) ([]Problem,
 	// 已提供的数据，不模拟提交，也不依赖登录态。
 	// 洛谷每页条数（perPage）由响应给出，必须用真实 perPage 计算页码与页内偏移，
 	// 不能用猜测值，否则两者不一致会错位漏题。
+	// 这里只兜底下限 30（默认页大小），不设上限：实际抓取量由洛谷 perPage 经
+	// globalOffset 切分决定，与上面两处接口分页上限（100）职责不同，故不强行统一。
 	if limit < 1 {
 		limit = 30
 	}
@@ -1881,7 +1842,10 @@ func (c *Client) luoguProblems(ctx context.Context, page, limit int) ([]Problem,
 	}
 	return rows, total, nil
 }
-func (c *Client) verifyAcWing(ctx context.Context, uid string) (Profile, error) {
+
+// verifyAcWing 目前 AcWing 没有公开校验接口，该平台不支持在线校验，
+// 因此不会发起任何上游请求；ctx 仅保留以与 Verify 的接口签名保持一致。
+func (c *Client) verifyAcWing(_ context.Context, uid string) (Profile, error) {
 	if strings.TrimSpace(uid) == "" {
 		return Profile{}, fmt.Errorf("AcWing 用户 ID 不能为空")
 	}
@@ -1893,6 +1857,3 @@ func (c *Client) syncAcWing(ctx context.Context, uid string) (SyncResult, error)
 	_, err := c.verifyAcWing(ctx, uid)
 	return SyncResult{}, err
 }
-
-// Keep compile-time coverage for URL query building in adapters.
-var _ = url.Values{}
