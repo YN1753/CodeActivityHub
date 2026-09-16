@@ -87,7 +87,7 @@
     GM_registerMenuCommand('设置 CodeActivityHub（Endpoint / Token）', () => {
       const endpoint = prompt('CodeActivityHub 地址（结尾不要带 /）：', getEndpoint() || FILE_ENDPOINT);
       if (endpoint === null) return;
-      const token = prompt('脚本 Token（登录 CodeActivityHub 后打开 /api/ingest/token 复制）：', getToken());
+      const token = prompt('脚本 Token（在设置页「脚本接入」分栏生成并复制）：', getToken());
       if (token === null) return;
       GM_setValue(KEY_ENDPOINT, endpoint.trim() || FILE_ENDPOINT);
       GM_setValue(KEY_TOKEN, token.trim());
@@ -163,9 +163,8 @@
    * @property {string} problemUrl
    * @property {string} language
    * @property {number} submitTime  ms
-   * @property {string} remoteId    平台提交号（力扣 submission_id / 洛谷 rid），可为空
-   * @property {number} attempts    已尝试确认次数
-   */
+ * @property {string} remoteId    平台提交号（力扣 submission_id / 洛谷 rid），可为空
+ */
   const queue = {
     read() {
       try {
@@ -182,11 +181,6 @@
       log('新增待确认提交', item);
     },
     remove(id) { queue.write(queue.read().filter(p => p.id !== id)); },
-    bump(id) {
-      const list = queue.read();
-      const hit = list.find(p => p.id === id);
-      if (hit) { hit.attempts = (hit.attempts || 0) + 1; queue.write(list); }
-    },
   };
 
   function makePending(site, problemId, extra) {
@@ -197,7 +191,7 @@
       id: `${site}:${pid}:${second}`,
       site, problemId: pid,
       problemTitle: pid, problemUrl: location.href, language: '',
-      submitTime: now, remoteId: '', attempts: 0,
+      submitTime: now, remoteId: '',
     }, extra || {});
   }
 
@@ -206,11 +200,9 @@
   /**
    * @typedef {Object} SubmitCtx
    * @property {'ajax'|'form'} kind
-   * @property {string} method
    * @property {string} url
    * @property {*}       requestBody
    * @property {string}  responseBody
-   * @property {number}  status
    * @property {HTMLFormElement|null} form
    *
    * @typedef {Object} Adapter
@@ -470,7 +462,6 @@
       verdict = adapter.resolveFromPage(pending);
     }
     if (!verdict) {
-      queue.bump(pending.id);
       log('仍未出终态，继续等待', pending.id);
       return false;
     }
@@ -479,14 +470,20 @@
     return true;
   }
 
+  const pendingForSite = () => queue.read().filter(p => p.site === adapter.site);
+
   function resolveAll(ctxFromResponse) {
-    const list = queue.read().filter(p => p.site === adapter.site);
+    const list = pendingForSite();
     for (const pending of list) tryResolve(pending, ctxFromResponse);
   }
 
   // ===================== 捕获层 =====================
 
   const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH']);
+
+  // 判断这次请求要不要捕获：写方法或命中提交/轮询/记录路径
+  const shouldCapture = (method, url) =>
+    WRITE_METHODS.has(String(method || '').toUpperCase()) || /submit|check|record/.test(String(url || ''));
 
   function onAjax(ctx) {
     // 先看看是不是一次新提交
@@ -503,8 +500,8 @@
     const response = await window.__codeactivityhubOriginalFetch(input, init);
     try {
       const responseBody = await response.clone().text();
-      if (WRITE_METHODS.has(method) || /submit|check|record/.test(url)) {
-        onAjax({ kind: 'ajax', method, url, requestBody, responseBody, status: response.status, form: null });
+      if (shouldCapture(method, url)) {
+        onAjax({ kind: 'ajax', url, requestBody, responseBody, form: null });
       }
     } catch (e) { log('fetch capture failed', e); }
     return response;
@@ -521,13 +518,15 @@
     return originalOpen.apply(this, arguments);
   };
   XMLHttpRequest.prototype.send = function (body) {
-    if (WRITE_METHODS.has(String(this.__cahMethod).toUpperCase()) || /submit|check|record/.test(String(this.__cahURL || ''))) {
-      // once: true 避免同一 XHR 对象重复 send 时重复触发上报
+    if (shouldCapture(this.__cahMethod, this.__cahURL)) {
+      // 注意：{ once: true } 并不会像注释旧版说的那样"避免同一 XHR 重复 send 时重复上报"。
+      // 真实行为相反——同一 XHR 对象被复用重发时，这里反而会漏报（部分请求的判定没被捕获）。
+      // 此处仅保留原逻辑，未改动行为。
       this.addEventListener('load', () => {
         onAjax({
-          kind: 'ajax', method: String(this.__cahMethod || 'GET').toUpperCase(),
+          kind: 'ajax',
           url: String(this.__cahURL || ''), requestBody: body,
-          responseBody: this.responseText, status: this.status, form: null,
+          responseBody: this.responseText, form: null,
         });
       }, { once: true });
     }
@@ -538,7 +537,7 @@
     const form = ev.target;
     if (!form || String(form.tagName).toUpperCase() !== 'FORM') return;
     const action = form.getAttribute('action') || location.href;
-    const pending = adapter.detectSubmit({ kind: 'form', method: 'POST', url: action, requestBody: '', responseBody: '', status: 0, form });
+    const pending = adapter.detectSubmit({ kind: 'form', url: action, requestBody: '', responseBody: '', form });
     if (pending) queue.add(pending);
   }, true);
 
@@ -550,7 +549,7 @@
     let tries = 0;
     resultPollTimer = setInterval(() => {
       tries += 1;
-      const pending = queue.read().filter((p) => p.site === adapter.site);
+      const pending = pendingForSite();
       // 队列空了（都确认完）或约 2.5 分钟后收手，不无限占位
       if (!pending.length || tries > 60) {
         clearInterval(resultPollTimer);
@@ -562,20 +561,21 @@
     }, 2500);
   }
 
+  // 进入结果页后：把同站待确认记录再过一遍，并启动结果页轮询
+  const confirmOnResultPage = () => {
+    if (adapter.isResultPage(location.pathname)) { resolveAll(null); startResultPolling(); }
+  };
+
   // SPA 路由变化（history API / 前进后退）同样要触发确认
   const wrapHistory = (fn) => function (...args) {
     const ret = fn.apply(this, args);
-    setTimeout(() => {
-      if (adapter.isResultPage(location.pathname)) { resolveAll(null); startResultPolling(); }
-    }, 400);
+    setTimeout(() => { confirmOnResultPage(); }, 400);
     return ret;
   };
   try {
     history.pushState = wrapHistory(history.pushState);
     history.replaceState = wrapHistory(history.replaceState);
-    window.addEventListener('popstate', () => {
-      if (adapter.isResultPage(location.pathname)) { resolveAll(null); startResultPolling(); }
-    });
+    window.addEventListener('popstate', () => { confirmOnResultPage(); });
   } catch (e) { /* 个别站点不允许改写 history */ }
 
   // 页面一进来就先试一次：结果页会一直轮询，直到判题出终态

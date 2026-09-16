@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 need_build=0
 if [ ! -f frontend/dist/index.html ]; then
   need_build=1
-elif find frontend/src frontend/index.html -newer frontend/dist/index.html -print -quit | grep -q .; then
+elif find frontend/src frontend/index.html frontend/public frontend/tailwind.config.js frontend/vite.config.js -newer frontend/dist/index.html -print -quit | grep -q .; then
   need_build=1
 fi
 

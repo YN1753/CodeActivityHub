@@ -75,7 +75,6 @@
  * @property {string} language
  * @property {number} submitTime  ms
  * @property {string} remoteId    平台提交号（力扣 submission_id / 洛谷 rid），其余为空
- * @property {number} attempts    已尝试确认次数
  */
 ```
 
@@ -90,9 +89,9 @@
 /**
  * @typedef {Object} SubmitCtx   // 提交上下文
  * @property {'ajax'|'form'} kind
- * @property {string} method  @property {string} url
+ * @property {string} url
  * @property {*} requestBody  @property {string} responseBody
- * @property {number} status  @property {HTMLFormElement|null} form
+ * @property {HTMLFormElement|null} form
  *
  * @typedef {Object} Adapter
  * @property {string} site
@@ -123,7 +122,7 @@
 
 - **暂不支持 AcWing**：脚本头部已移除 `acwing.com` 的匹配规则，避免"声明支持却什么都不做"的
   无效加载。如需支持请新增对应 Adapter。
-- **洛谷已实测校准（v2.2.1，2026-09-15）**，实测结论：题目页要先点「提交答案」标签才有编辑器；
+- **洛谷已实测校准（v2.3.0，2026-09-15）**，实测结论：题目页要先点「提交答案」标签才有编辑器；
   编辑器是 CodeMirror 6；记录页的判定是**页面直出**的（「评测状态」旁 `<span class="lcolor--*">`
   里是 `Accepted` / `Unaccepted`），既不走 XHR 也不走 WebSocket——所以脚本在结果页会每 2.5 秒
   重读一次 DOM 直到出终态（约 2.5 分钟后停止）。

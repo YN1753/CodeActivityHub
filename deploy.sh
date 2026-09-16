@@ -13,7 +13,7 @@ if [ -f "$APP_DIR/codeactivityhub-server" ]; then
 fi
 
 echo "Building CodeActivityHub frontend..."
-npm --prefix frontend install
+npm --prefix frontend ci
 npm --prefix frontend run build
 
 echo "Building CodeActivityHub Go backend..."

@@ -1938,8 +1938,8 @@ const app = createApp({
       return timeStr;
     };
 
-    // 平台图标：小圆角方块 + 品牌色 + 两字缩写，比原来的长英文徽章好扫读。
-    // 缩写复用 MISTAKE_PLATFORM_SHORT，避免两处映射各自漂移。
+    // 平台图标：直接用各平台官方 logo（放在 frontend/public/logos/，构建后即 /logos/<key>.png）。
+    // 本地自托管、不热链外站；样式与尺寸统一在模板里控制（表格里 24px）。
     // 平台 logo：官方图标已下载到 frontend/public/logos/（构建时拷到站点根目录），
     // 本地自托管，不热链外站；图片加载失败时下面的文字缩写会作为兜底显示。
     const platformLogo = (platform) => `/logos/${platform}.png`;

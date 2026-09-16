@@ -1,7 +1,4 @@
-# 任意层级下运行时落下的 SQLite 数据文件
-data/*.db
-data/*.db-shm
-data/*.db-wal
+# 任意层级下运行时落下的 SQLite 数据文件（**/data/*.db* 已覆盖 data/*.db*）
 **/data/*.db
 **/data/*.db-shm
 **/data/*.db-wal

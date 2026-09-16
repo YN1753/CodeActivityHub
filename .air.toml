@@ -10,7 +10,7 @@ tmp_dir = "tmp"
   pre_cmd = ["sh scripts/dev-build-frontend.sh"]
   cmd = "go build -o ./tmp/server ./backend/cmd/server"
   bin = "./tmp/server"
-  # 监听前端源文件，改 HTML/JS/CSS 也能自动重建 dist 并重启
+  # 监听前端源文件，改 src / index.html / public / tailwind.config.js / vite.config.js 会自动重建 dist 并重启
   include_ext = ["go", "html", "js", "css", "svg"]
   exclude_dir = [
     "tmp",
