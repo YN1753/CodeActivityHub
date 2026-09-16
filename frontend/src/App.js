@@ -2,32 +2,72 @@ import { createApp, ref, onMounted, onUnmounted, computed, nextTick, watch } fro
 import * as echarts from 'echarts';
 import './style.css';
 
+// --- 平台注册表：单一数据源 ---
+// 全站平台相关的标签 / 短名 / 圆点色(Tailwind 字面量) / 饼图色(hex) / 占位符 / Cookie / 是否可同步，
+// 都收敛到这里。platformMeta、platformLabel、MISTAKE_PLATFORM_SHORT 都从它派生，避免各处分头漂移。
+// 注意：dot 用 Tailwind 类（必须字面量，否则不生成）；color 是饼图十六进制色，历史成因与 dot 不一致，
+// 保持原样即可（不要顺手改成一致，否则图表配色会变）。
+const PLATFORMS = {
+  codeforces: { label: "Codeforces", short: "CF", dot: "bg-blue-500", color: "#06b6d4", handlePlaceholder: "用户名", cookie: false, canSync: true },
+  leetcode:   { label: "LeetCode",   short: "LC", dot: "bg-amber-500", color: "#22c55e", handlePlaceholder: "用户名", cookie: true, cookiePlaceholder: "LEETCODE_SESSION", canSync: true },
+  atcoder:    { label: "AtCoder",     short: "AT", dot: "bg-purple-500", color: "#a855f7", handlePlaceholder: "用户名", cookie: false, canSync: true },
+  luogu:      { label: "洛谷",        short: "LG", dot: "bg-sky-500", color: "#3b82f6", handlePlaceholder: "UID", cookie: true, cookiePlaceholder: "__client_id", canSync: true },
+  acwing:     { label: "AcWing",      short: "AW", dot: "bg-indigo-500", color: "#6366f1", handlePlaceholder: "空间 ID", cookie: true, cookiePlaceholder: "sessionid", canSync: false }
+};
+
 // --- 各处筛选下拉的静态选项 ---
 const PROBLEM_PLATFORM_OPTIONS = [
-  { value: "codeforces", label: "Codeforces" },
-  { value: "leetcode", label: "LeetCode" },
-  { value: "atcoder", label: "AtCoder" },
-  { value: "luogu", label: "洛谷" }
+  { value: "codeforces", label: PLATFORMS.codeforces.label },
+  { value: "leetcode", label: PLATFORMS.leetcode.label },
+  { value: "atcoder", label: PLATFORMS.atcoder.label },
+  { value: "luogu", label: PLATFORMS.luogu.label }
 ];
 const SUB_PLATFORM_OPTIONS = [
   { value: "all", label: "全部平台" },
-  { value: "codeforces", label: "Codeforces" },
-  { value: "leetcode", label: "LeetCode" },
-  { value: "atcoder", label: "AtCoder" },
-  { value: "luogu", label: "洛谷" },
-  { value: "acwing", label: "AcWing" }
+  { value: "codeforces", label: PLATFORMS.codeforces.label },
+  { value: "leetcode", label: PLATFORMS.leetcode.label },
+  { value: "atcoder", label: PLATFORMS.atcoder.label },
+  { value: "luogu", label: PLATFORMS.luogu.label },
+  { value: "acwing", label: PLATFORMS.acwing.label }
 ];
 const VERDICT_OPTIONS = [
   { value: "all", label: "全部状态" },
   { value: "AC", label: "已通过" },
   { value: "WA", label: "未通过" }
 ];
-// 错题集平台筛选 chips 的短标签（与热力图 chips 一致）
-const MISTAKE_PLATFORM_SHORT = { codeforces: "CF", atcoder: "AT", luogu: "LG", leetcode: "LC", acwing: "AW" };
+// 错题集平台筛选 chips 的短标签（与热力图 chips 一致）：从注册表派生
+const MISTAKE_PLATFORM_SHORT = Object.fromEntries(
+  Object.entries(PLATFORMS).map(([key, m]) => [key, m.short])
+);
 const MISTAKE_SORT_OPTIONS = [
   { value: "fails", label: "按失败次数" },
   { value: "recent", label: "按最近尝试" }
 ];
+
+// --- 通用工具与常量 ---
+// 周几文案：热力图 tooltip / 比赛日期 / 错题集 / 日历 dayLabel 共用
+const WEEKDAY_CN = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const WEEKDAY_CN_SHORT = ["日", "一", "二", "三", "四", "五", "六"];
+// 两位数补零
+const pad2 = (n) => String(n).padStart(2, "0");
+// 比赛默认时长（秒）：后端未返回 duration_seconds 时的兜底
+const DEFAULT_CONTEST_DURATION = 7200;
+// 防抖：wait 内只执行最后一次（搜索关键词 / 题库关键词）
+const debounce = (fn, wait) => {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), wait);
+  };
+};
+// ECharts 实例复用：同一个 DOM 只 init 一次
+const ensureChart = (id) => {
+  const dom = document.getElementById(id);
+  if (!dom) return null;
+  let chart = echarts.getInstanceByDom(dom);
+  if (!chart) chart = echarts.init(dom);
+  return chart;
+};
 
 // 原生 <select> 的弹出层由操作系统渲染（macOS 上是 Liquid Glass 玻璃材质），CSS 无法定制，
 // 所以用与 ui-card / ui-input 同一套设计令牌的自定义组件替代；模板在 index.html 的 #ui-select-tpl。
@@ -155,11 +195,13 @@ const app = createApp({
     const isChangingPwd = ref(false);
 
     // --- Dashboard & Platform State ---
-    const overview = ref({
+    // 空的总览结构：初始化与登出 reset 共用，保证字段（today_problems / recent_days）一致
+    const emptyOverview = () => ({
       stats: { total_ac: 0, total_subs: 0, today_ac: 0, today_subs: 0, today_problems: 0, streak: 0, recent_days: [], platforms: {} },
       platforms_status: [],
       last_sync_time: ""
     });
+    const overview = ref(emptyOverview());
 
     // 今日推进度：尝试/通过题数、提交次数、题目通过率（按题目去重算，不是按提交）
     const todayStats = computed(() => {
@@ -249,7 +291,7 @@ const app = createApp({
     const weekdayOf = (dateStr) => {
       const d = new Date(dateStr + "T00:00:00");
       if (isNaN(d.getTime())) return "";
-      return ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()];
+      return WEEKDAY_CN[d.getDay()];
     };
 
     // 近 7 天汇总：通过题数、提交次数、有产出的天数、单日最好
@@ -337,7 +379,6 @@ const app = createApp({
 
     // --- 长效脚本 Token（独立于登录会话，可逐条轮换/吊销） ---
     const ingestTokens = ref([]);
-    const isLoadingIngestTokens = ref(false);
     const isIssuingToken = ref(false);
     const tokenActionId = ref(0);
     const freshToken = ref("");        // 仅生成/轮换后显示一次
@@ -346,15 +387,9 @@ const app = createApp({
     // --- 平台多账号：同一平台可保存多个，单选启用 ---
     // canSync：服务端能否拉取该平台的历史提交记录（AcWing 无公开接口，只能靠浏览器脚本）。
     // 占位符只写"填什么"，具体怎么拿统一放在设置页的「填写说明」里（见 index.html）。
-    const platformMeta = {
-      codeforces: { label: "Codeforces", dot: "bg-blue-500", handlePlaceholder: "用户名", cookie: false, canSync: true },
-      leetcode: { label: "LeetCode", dot: "bg-amber-500", handlePlaceholder: "用户名", cookie: true, cookiePlaceholder: "LEETCODE_SESSION", canSync: true },
-      atcoder: { label: "AtCoder", dot: "bg-purple-500", handlePlaceholder: "用户名", cookie: false, canSync: true },
-      luogu: { label: "洛谷", dot: "bg-sky-500", handlePlaceholder: "UID", cookie: true, cookiePlaceholder: "__client_id", canSync: true },
-      acwing: { label: "AcWing", dot: "bg-indigo-500", handlePlaceholder: "空间 ID", cookie: true, cookiePlaceholder: "sessionid", canSync: false }
-    };
+    // 直接复用顶部 PLATFORMS 注册表（label/dot/handlePlaceholder/cookie/canSync 都已在那定义）。
+    const platformMeta = PLATFORMS;
     const accounts = ref([]);
-    const isLoadingAccounts = ref(false);
     const isVerifyingAccount = ref({});
     // 每个平台"同步记录"按钮的进行态：浏览器脚本只负责实时推送，历史记录按平台手动补
     const syncingPlatform = ref({});
@@ -369,7 +404,6 @@ const app = createApp({
     const toggleUserMenu = () => { userMenuOpen.value = !userMenuOpen.value; };
     const closeUserMenu = () => { userMenuOpen.value = false; };
 
-    const showGuide = ref(false);
     const toast = ref({ show: false, message: "", type: "success" });
     let toastTimer = null; // 复用同一个定时器，避免连续 toast 互相提前关闭
     const warningBanner = ref("");
@@ -449,11 +483,7 @@ const app = createApp({
       freshToken.value = "";
       freshTokenName.value = "";
       currentTab.value = "overview";
-      overview.value = {
-        stats: { total_ac: 0, total_subs: 0, today_ac: 0, today_subs: 0, streak: 0, platforms: {} },
-        platforms_status: [],
-        last_sync_time: ""
-      };
+      overview.value = emptyOverview();
       rawHeatmap.value = [];
       tagStats.value = [];
       contests.value = [];
@@ -780,11 +810,6 @@ const app = createApp({
       return filteredSubmissions.value.slice(start, start + pageSize.value);
     });
 
-    const setSubFilter = (p) => {
-      subFilter.value = p;
-      currentPage.value = 1;
-    };
-
     const setDateFilter = (preset) => {
       dateFilter.value = preset;
       currentPage.value = 1;
@@ -900,7 +925,7 @@ const app = createApp({
     const getContestStatus = (c) => {
       const now = nowTimestamp.value;
       const st = c.start_timestamp;
-      const dur = c.duration_seconds || 7200;
+      const dur = c.duration_seconds || DEFAULT_CONTEST_DURATION;
       const et = st + dur;
       if (now < st) return "BEFORE";
       if (now < et) return "CODING";
@@ -910,7 +935,7 @@ const app = createApp({
     const formatContestCountdown = (c) => {
       const now = nowTimestamp.value;
       const st = c.start_timestamp;
-      const dur = c.duration_seconds || 7200;
+      const dur = c.duration_seconds || DEFAULT_CONTEST_DURATION;
       const et = st + dur;
 
       if (now < st) {
@@ -959,7 +984,7 @@ const app = createApp({
 
     const upcomingContestsCount = computed(() => {
       const now = nowTimestamp.value;
-      return (contests.value || []).filter(c => (c.start_timestamp + (c.duration_seconds || 7200)) > now).length;
+      return (contests.value || []).filter(c => (c.start_timestamp + (c.duration_seconds || DEFAULT_CONTEST_DURATION)) > now).length;
     });
 
     // --- 日历页三分组：进行中 / 即将开始 / 已结束（都基于筛选结果） ---
@@ -1001,7 +1026,7 @@ const app = createApp({
     const formatCountdownTo = (c) => countdownParts(c.start_timestamp - nowTimestamp.value);
     // 进行中：距结束的剩余时间（HH:MM:SS，超一天带天数）
     const formatRemaining = (c) => {
-      const p = countdownParts((c.start_timestamp + (c.duration_seconds || 7200)) - nowTimestamp.value);
+      const p = countdownParts((c.start_timestamp + (c.duration_seconds || DEFAULT_CONTEST_DURATION)) - nowTimestamp.value);
       return p.d > 0 ? `${p.d}天 ${p.h}:${p.m}:${p.s}` : `${p.h}:${p.m}:${p.s}`;
     };
     // 开赛时间："09-14 周日 19:35"
@@ -1019,7 +1044,7 @@ const app = createApp({
     const topUpcomingContests = computed(() => {
       const now = nowTimestamp.value;
       return (contests.value || [])
-        .filter(c => (c.start_timestamp + (c.duration_seconds || 7200)) > now)
+        .filter(c => (c.start_timestamp + (c.duration_seconds || DEFAULT_CONTEST_DURATION)) > now)
         .slice(0, 3);
     });
 
@@ -1237,14 +1262,10 @@ const app = createApp({
     };
 
     // 关键词输入防抖后检索；难度/标签/解决状态变化立即检索
-    let problemsKeywordTimer = null;
-    watch(problemsKeyword, () => {
-      clearTimeout(problemsKeywordTimer);
-      problemsKeywordTimer = setTimeout(() => {
-        problemsPage.value = 1;
-        loadProblems();
-      }, 400);
-    });
+    watch(problemsKeyword, debounce(() => {
+      problemsPage.value = 1;
+      loadProblems();
+    }, 400));
     watch([problemsDifficulty, problemsTag, problemsSolved], () => {
       problemsPage.value = 1;
       loadProblems();
@@ -1305,7 +1326,6 @@ const app = createApp({
 
     // --- 长效脚本 Token（独立于登录会话，可逐个轮换/吊销） ---
     const loadIngestTokens = async () => {
-      isLoadingIngestTokens.value = true;
       try {
         const res = await apiFetch("/api/ingest/tokens");
         const data = await res.json();
@@ -1315,8 +1335,6 @@ const app = createApp({
           console.error("加载脚本 Token 列表失败:", e);
           showToast("加载脚本 Token 失败: " + e.message, "error");
         }
-      } finally {
-        isLoadingIngestTokens.value = false;
       }
     };
 
@@ -1426,7 +1444,6 @@ const app = createApp({
       .sort((a, b) => (b.selected ? 1 : 0) - (a.selected ? 1 : 0) || a.id - b.id);
 
     const loadAccounts = async () => {
-      isLoadingAccounts.value = true;
       try {
         const res = await apiFetch("/api/accounts");
         const data = await res.json();
@@ -1436,8 +1453,6 @@ const app = createApp({
           console.error("加载平台账号失败:", e);
           showToast("加载平台账号失败: " + e.message, "error");
         }
-      } finally {
-        isLoadingAccounts.value = false;
       }
     };
 
@@ -1575,21 +1590,14 @@ const app = createApp({
       await Promise.all([loadOverview(), loadHeatmap(), loadTags(), loadMistakes(), loadSubmissions(), loadSettings(), loadContests()]);
       await nextTick();
       if (currentTab.value === "overview") {
-        renderHeatmap();
-        renderTagBarChart();
-        renderPlatformPie();
+        renderOverviewCharts();
       }
     };
 
     // --- ECharts 渲染 ---
     const renderHeatmap = () => {
-      const chartDom = document.getElementById("heatmap-chart");
-      if (!chartDom) return;
-
-      let chart = echarts.getInstanceByDom(chartDom);
-      if (!chart) {
-        chart = echarts.init(chartDom);
-      }
+      const chart = ensureChart("heatmap-chart");
+      if (!chart) return;
       heatmapChart = chart;
 
       const targetYear = selectedHeatmapYear.value || new Date().getFullYear();
@@ -1648,7 +1656,7 @@ const app = createApp({
           extraCssText: "border-radius: 8px; box-shadow: 0 4px 16px rgba(16, 24, 40, 0.12); z-index: 99999;",
           formatter: function (p) {
             const d = new Date(p.value[0] + "T00:00:00");
-            const week = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()];
+            const week = WEEKDAY_CN[d.getDay()];
             const n = p.value[1];
             const line2 = n > 0
               ? `<span class="text-blue-600 font-bold">${escapeHtml(n)} 次提交</span>`
@@ -1786,13 +1794,11 @@ const app = createApp({
       platformPieChart = chart;
 
       const pData = overview.value.stats.platforms || {};
-      const data = [
-        { value: pData.codeforces?.ac || 0, name: "Codeforces", itemStyle: { color: "#06b6d4" } },
-        { value: pData.leetcode?.ac || 0, name: "LeetCode", itemStyle: { color: "#22c55e" } },
-        { value: pData.atcoder?.ac || 0, name: "AtCoder", itemStyle: { color: "#a855f7" } },
-        { value: pData.luogu?.ac || 0, name: "洛谷", itemStyle: { color: "#3b82f6" } },
-        { value: pData.acwing?.ac || 0, name: "AcWing", itemStyle: { color: "#6366f1" } }
-      ].filter(d => d.value > 0);
+      const data = Object.entries(PLATFORMS).map(([key, m]) => ({
+        value: pData[key]?.ac || 0,
+        name: m.label,
+        itemStyle: { color: m.color }
+      })).filter(d => d.value > 0);
 
       const option = {
         tooltip: {
@@ -1831,6 +1837,13 @@ const app = createApp({
 
       chart.setOption(option, true);
       chart.resize();
+    };
+
+    // 总览页三张图一次性重绘（reloadAllData / syncNow / 切到总览 共用）
+    const renderOverviewCharts = () => {
+      renderHeatmap();
+      renderTagBarChart();
+      renderPlatformPie();
     };
 
     // --- Platform & Sync Actions ---
@@ -1930,13 +1943,7 @@ const app = createApp({
     // 平台 logo：官方图标已下载到 frontend/public/logos/（构建时拷到站点根目录），
     // 本地自托管，不热链外站；图片加载失败时下面的文字缩写会作为兜底显示。
     const platformLogo = (platform) => `/logos/${platform}.png`;
-    const platformLabel = (platform) => ({
-      codeforces: "Codeforces",
-      atcoder: "AtCoder",
-      luogu: "洛谷",
-      leetcode: "LeetCode",
-      acwing: "AcWing"
-    }[platform] || platform);
+    const platformLabel = (platform) => (PLATFORMS[platform]?.label || platform);
 
     // 顶部平台指示灯：返回圆点后缀（dot-ok / dot-warn / dot-error / dot-muted）。
     // unsupported（平台没有公开校验接口）不是故障，用中性灰点。
@@ -2009,11 +2016,7 @@ const app = createApp({
     watch(currentTab, async (tab) => {
       if (tab === "overview") {
         await loadOverview();
-        nextTick(() => {
-          renderHeatmap();
-          renderTagBarChart();
-          renderPlatformPie();
-        });
+        nextTick(renderOverviewCharts);
       } else if (tab === "submissions") {
         await loadSubmissions();
       } else if (tab === "mistakes") {
@@ -2028,7 +2031,6 @@ const app = createApp({
     });
 
     return {
-      token,
       currentUser,
       isAuthChecking,
       isLoggedIn,
@@ -2048,7 +2050,6 @@ const app = createApp({
       streakWrap,
       platformWrap,
       miniTip,
-      showMiniTip,
       miniTipClass,
       showStreakTip,
       showPlatformTip,
@@ -2065,7 +2066,6 @@ const app = createApp({
       endDate,
       verdictFilter,
       selectedTag,
-      availableTags,
       heatmapYearOptions,
       tagFilterOptions,
       problemPlatformOptions: PROBLEM_PLATFORM_OPTIONS,
@@ -2084,12 +2084,10 @@ const app = createApp({
       pageSizeOptions,
       changePageSize,
       overview,
-      rawHeatmap,
       heatmapFilter,
       selectedHeatmapYear,
       availableHeatmapYears,
       setHeatmapYear,
-      tagStats,
       mistakes,
       mistakePlatformFilter,
       mistakeSort,
@@ -2099,19 +2097,14 @@ const app = createApp({
       setMistakePlatform,
       setMistakeSort,
       mistakeStats,
-      submissions,
       subFilter,
-      setSubFilter,
-      platformStatusMap,
       isSyncing,
       isSaving,
       ingestTokens,
-      isLoadingIngestTokens,
       isIssuingToken,
       tokenActionId,
       freshToken,
       freshTokenName,
-      loadIngestTokens,
       createIngestToken,
       rotateIngestToken,
       revokeIngestToken,
@@ -2120,10 +2113,8 @@ const app = createApp({
       isTokenActive,
       // 平台多账号
       platformMeta,
-      accounts,
       accountsFor,
       accountForms,
-      isLoadingAccounts,
       isVerifyingAccount,
       syncingPlatform,
       syncPlatformRecords,
@@ -2139,7 +2130,6 @@ const app = createApp({
       userMenuOpen,
       toggleUserMenu,
       closeUserMenu,
-      showGuide,
       toast,
       toastClass,
       toastIcon,
@@ -2160,7 +2150,6 @@ const app = createApp({
       problemsPageSizeOptions,
       totalProblemPages,
       isLoadingProblems,
-      loadProblems,
       changeProblemsPlatform,
       changeProblemsLimit,
       changeProblemsPage,
@@ -2177,11 +2166,9 @@ const app = createApp({
       resetProblemsFilters,
       syncProblems,
       // Contests exports
-      contests,
       contestFilter,
       contestSearch,
       isSyncingContests,
-      filteredContests,
       liveContests,
       upcomingContests,
       pastContests,
@@ -2198,7 +2185,6 @@ const app = createApp({
       formatContestDate,
       contestPlatformDot,
       contestPlatformLabel,
-      loadContests,
       syncContestsNow
     };
   }
