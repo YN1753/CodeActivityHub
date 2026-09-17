@@ -1337,7 +1337,7 @@ const app = createApp({
     };
 
     const createIngestToken = async () => {
-      const name = window.prompt("给这个 Token 起个名字（例如：家里的电脑 / 实验室机器）", "浏览器脚本");
+      const name = window.prompt("给这个 Token 起个名字（例如：家里的电脑 / 实验室机器）", "手动同步");
       if (name === null) return;
       isIssuingToken.value = true;
       try {
@@ -1407,7 +1407,7 @@ const app = createApp({
       if (!freshToken.value) return;
       try {
         await navigator.clipboard.writeText(freshToken.value);
-        showToast("Token 已复制，粘贴到 Tampermonkey 的脚本设置里", "success");
+        showToast("Token 已复制，请妥善保存（脚本已移除，仅在你自己需要时可用）", "success");
       } catch (e) {
         showToast("复制失败，请手动选中复制", "error");
       }
@@ -1997,7 +1997,7 @@ const app = createApp({
       }, 200);
       window.addEventListener("resize", resizeHandler);
 
-      // 不再定时刷新平台数据；提交由 Tampermonkey 事件推送，页面切换或点击“立即同步”时读取最新聚合结果。
+      // 不再定时刷新平台数据；数据只在手动同步或切换页面时读取最新聚合结果。
     });
 
     // 组件卸载：清理定时器、resize 监听与三个 ECharts 实例，避免内存与资源泄漏

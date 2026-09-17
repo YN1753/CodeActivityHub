@@ -920,7 +920,7 @@ func (c *Client) syncLeetCode(ctx context.Context, username, cookie string) (Syn
 	// 没 Cookie：中国站的流水接口不返回数据，国际站退回到公开的"最近 AC"接口。
 	if strings.Contains(graphqlEP, "leetcode.cn") {
 		return SyncResult{Platform: "leetcode", Profile: profile,
-			Message: "力扣中国站的提交流水需要登录 Cookie：在账号里粘一次整段 cookie 即可同步历史（也可以让浏览器脚本实时推送）"}, nil
+			Message: "力扣中国站的提交流水需要登录 Cookie：在账号里粘一次整段 cookie 即可同步历史"}, nil
 	}
 	const q = `query($username:String!,$limit:Int!){ recentAcSubmissionList(username:$username,limit:$limit){ id title titleSlug timestamp lang statusDisplay } }`
 	var out struct {

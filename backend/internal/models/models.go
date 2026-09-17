@@ -11,7 +11,7 @@ import (
 // 会话 token 是纯 64 位十六进制，脚本 token 带这个前缀。
 const IngestTokenPrefix = "cah_"
 
-// IngestToken 是给 Tampermonkey 脚本用的长效凭证：
+// IngestToken 是长效凭证（脚本已移除，保留接口供后续接入使用）：
 // 独立于登录会话（不会 7 天过期），只能调用 /api/ingest/*，可在设置页单独吊销或轮换。
 // 库里只存哈希，明文仅在创建/轮换时返回一次。
 type IngestToken struct {

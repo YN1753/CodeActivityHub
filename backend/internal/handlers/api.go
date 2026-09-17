@@ -710,7 +710,7 @@ func platformSupportsOnlineVerify(platform string) bool {
 // 不能则给出一条说明（用于跳过而不是报错，避免设置页挂上无法消除的告警）。
 func platformReadyForHistorySync(platform string, cfg platforms.Config) (bool, string) {
 	if !platformSupportsOnlineVerify(platform) {
-		return false, "该平台无公开历史提交接口，提交记录请使用浏览器脚本实时接入"
+		return false, "该平台无公开历史提交接口，提交记录请手动同步"
 	}
 	if platform == "luogu" && strings.TrimSpace(cfg.LuoguCookie) == "" {
 		return false, "洛谷历史同步需要 __client_id Cookie；未配置时请使用浏览器脚本实时接入"

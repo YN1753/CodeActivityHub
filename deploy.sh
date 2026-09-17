@@ -54,4 +54,4 @@ if [ "$health_ok" -ne 1 ]; then
 fi
 
 echo "CodeActivityHub is running at http://127.0.0.1:$PORT"
-echo "No background OJ polling is enabled; use scripts/codeactivityhub-tampermonkey.user.js."
+echo "No background OJ polling is enabled; use the 手动同步 button in 设置."
