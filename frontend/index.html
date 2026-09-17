@@ -910,57 +910,12 @@
                 </div>
               </section>
 
-              <!-- ② 脚本接入 -->
-              <section v-show="settingsTab === 'script'" class="space-y-4">
-                <div class="flex items-baseline justify-between gap-3">
-                  <h2 class="text-sm font-semibold">长效 Token</h2>
-                  <button @click="createIngestToken" :disabled="isIssuingToken" class="btn-primary text-xs">
-                    {{ isIssuingToken ? '生成中…' : '生成新 Token' }}
-                  </button>
-                </div>
-                <div class="ui-card p-4 space-y-3">
-                  <p class="ui-hint">
-                    Token 独立于登录会话、长期有效，只用于提交记录接入（其他接口返回 403）。
-                    明文只在生成或轮换时显示一次，之后仅能看到提示与最后使用时间。
-                  </p>
-                  <div v-if="freshToken" class="p-3 rounded-lg bg-amber-50 border border-amber-200 space-y-2">
-                    <div class="text-xs font-medium text-amber-800">「{{ freshTokenName }}」的新 Token —— 只显示这一次，请立即复制</div>
-                    <div class="flex flex-col sm:flex-row gap-2">
-                      <input :value="freshToken" readonly @focus="$event.target.select()" class="ui-input font-mono text-xs flex-1">
-                      <button @click="copyFreshToken" class="btn-primary text-xs whitespace-nowrap">复制</button>
-                      <button @click="dismissFreshToken" class="btn-secondary text-xs whitespace-nowrap">我已保存</button>
-                    </div>
-                  </div>
-
-                  <div class="space-y-1.5">
-                    <div v-for="tk in ingestTokens" :key="tk.id"
-                         :class="['p-2.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs',
-                                  isTokenActive(tk) ? 'border-slate-200 bg-slate-50' : 'border-slate-200 opacity-60']">
-                      <div class="min-w-0">
-                        <div class="flex items-center gap-2">
-                          <span class="font-medium" :class="isTokenActive(tk) ? 'text-slate-900' : 'text-slate-400'">{{ tk.name }}</span>
-                          <span :class="['pill', isTokenActive(tk) ? 'pill-ok' : 'pill-error']">{{ isTokenActive(tk) ? '生效中' : '已吊销' }}</span>
-                        </div>
-                        <div class="font-mono text-[11px] text-slate-400 mt-0.5">
-                          {{ tk.token_hint }}•••• · 创建 {{ (tk.created_at || '').slice(0, 10) }} · 最后使用 {{ tk.last_used_at ? formatTimeAgo(tk.last_used_at) : '从未使用' }}
-                        </div>
-                      </div>
-                      <div v-if="isTokenActive(tk)" class="flex gap-1.5 shrink-0">
-                        <button @click="rotateIngestToken(tk)" :disabled="tokenActionId === tk.id" class="btn-secondary text-[11px] py-1">轮换</button>
-                        <button @click="revokeIngestToken(tk)" :disabled="tokenActionId === tk.id" class="px-2 py-1 rounded text-[11px] text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 disabled:opacity-50">吊销</button>
-                      </div>
-                    </div>
-                    <div v-if="ingestTokens.length === 0" class="text-xs text-slate-400">还没有 Token，点右上角「生成新 Token」。</div>
-                  </div>
-                </div>
-              </section>
-
-              <!-- ③ 数据与同步 -->
+              <!-- ② 数据与同步 -->
               <section v-show="settingsTab === 'data'" class="space-y-4">
                 <h2 class="text-sm font-semibold">数据与同步</h2>
                 <div class="ui-card p-4 space-y-2">
                   <div class="text-xs font-semibold text-slate-900">数据来源</div>
-                  <p class="ui-hint">看板不在后台轮询：历史数据在你点击「刷新」或某个平台的「同步记录」时，通过各平台公开接口（或你填的 Cookie）读取；提交后的即时结果由长效 Token + 浏览器脚本推送。</p>
+                  <p class="ui-hint">看板不在后台轮询：历史数据在你点击「刷新」或某个平台的「同步记录」时，通过各平台公开接口（或你填的 Cookie）读取；提交后的即时结果由手动同步写入。</p>
                   <p class="ui-hint">平台凭证只保存在本地数据库，只用于以你的身份向对应平台读取提交记录，不会发送给其他站点。</p>
                   <div class="pt-3 flex justify-end border-t border-slate-100">
                     <button @click="saveSettingsAndSync" :disabled="isSaving" class="btn-primary text-xs">

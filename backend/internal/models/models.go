@@ -1,44 +1,8 @@
 package models
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"time"
 )
-
-// IngestTokenPrefix 用来把长效脚本 token 和登录会话 token 区分开：
-// 会话 token 是纯 64 位十六进制，脚本 token 带这个前缀。
-const IngestTokenPrefix = "cah_"
-
-// IngestToken 是长效凭证（脚本已移除，保留接口供后续接入使用）：
-// 独立于登录会话（不会 7 天过期），只能调用 /api/ingest/*，可在设置页单独吊销或轮换。
-// 库里只存哈希，明文仅在创建/轮换时返回一次。
-type IngestToken struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	UserID     uint      `gorm:"index;not null" json:"-"`
-	Name       string    `gorm:"size:64" json:"name"`
-	TokenHash  string    `gorm:"uniqueIndex;size:64;not null" json:"-"`
-	TokenHint  string    `gorm:"size:16" json:"token_hint"`
-	LastUsedAt string    `json:"last_used_at"`
-	RevokedAt  string    `json:"revoked_at"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
-func HashIngestToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
-}
-
-// NewIngestTokenValue 生成明文 token 及其哈希。
-func NewIngestTokenValue() (string, string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", "", err
-	}
-	token := IngestTokenPrefix + hex.EncodeToString(buf)
-	return token, HashIngestToken(token), nil
-}
 
 type User struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`

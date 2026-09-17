@@ -311,7 +311,6 @@ const app = createApp({
     // 系统设置的分栏（入口仍然是头像菜单里的「系统设置」）
     const settingsTabs = [
       ["accounts", "平台账号", "各平台账号与 Cookie"],
-      ["script", "脚本接入", "浏览器脚本 Token"],
       ["data", "数据与同步", "数据来源与同步方式"],
       ["security", "账号安全", "登录密码"]
     ];
@@ -374,13 +373,6 @@ const app = createApp({
     const platformStatusMap = ref({});
     const isSyncing = ref(false);
     const isSaving = ref(false);
-
-    // --- 长效脚本 Token（独立于登录会话，可逐条轮换/吊销） ---
-    const ingestTokens = ref([]);
-    const isIssuingToken = ref(false);
-    const tokenActionId = ref(0);
-    const freshToken = ref("");        // 仅生成/轮换后显示一次
-    const freshTokenName = ref("");
 
     // --- 平台多账号：同一平台可保存多个，单选启用 ---
     // canSync：服务端能否拉取该平台的历史提交记录（无公开接口的平台只能靠浏览器脚本）。
@@ -471,15 +463,12 @@ const app = createApp({
       isAuthChecking.value = false;
     };
 
-    // 统一清空用户维度的内存态：换账号时避免上一个用户的数据闪现，
-    // 同时清掉长效 Token 明文（freshToken）。退出/改密/鉴权失效时调用。
+    // 统一清空用户维度的内存态：换账号时避免上一个用户的数据闪现。
+    // 退出/改密/鉴权失效时调用。
     const resetState = () => {
       submissions.value = [];
       mistakes.value = [];
       accounts.value = [];
-      ingestTokens.value = [];
-      freshToken.value = "";
-      freshTokenName.value = "";
       currentTab.value = "overview";
       overview.value = emptyOverview();
       rawHeatmap.value = [];
@@ -515,7 +504,7 @@ const app = createApp({
       
       const res = await fetch(reqUrl, options);
       if (res.status === 401) {
-        // 鉴权已失效：清空用户维度内存态，避免换账号时上一用户数据闪现；同时清掉长效 Token 明文
+        // 鉴权已失效：清空用户维度内存态，避免换账号时上一用户数据闪现
         resetState();
         clearLocalSession();
         authError.value = "登录会话已过期，请重新登录";
@@ -674,7 +663,7 @@ const app = createApp({
           showToast("密码修改成功！请重新登录", "success");
           pwdForm.value = { oldPassword: "", newPassword: "", confirmNewPassword: "" };
           // 后端已删除该用户全部会话，再调 /logout 只会拿到 401；
-          // 这里直接清理本地状态即可。resetState 清掉内存态与长效 Token 明文，
+          // 这里直接清理本地状态即可。resetState 清掉内存态，
           // clearLocalSession 清掉 token/用户，避免换账号时上一用户数据闪现。
           setTimeout(() => {
             resetState();
@@ -1322,104 +1311,6 @@ const app = createApp({
       }
     };
 
-    // --- 长效脚本 Token（独立于登录会话，可逐个轮换/吊销） ---
-    const loadIngestTokens = async () => {
-      try {
-        const res = await apiFetch("/api/ingest/tokens");
-        const data = await res.json();
-        ingestTokens.value = data.tokens || [];
-      } catch (e) {
-        if (e.message !== "UNAUTHORIZED") {
-          console.error("加载脚本 Token 列表失败:", e);
-          showToast("加载脚本 Token 失败: " + e.message, "error");
-        }
-      }
-    };
-
-    const createIngestToken = async () => {
-      const name = window.prompt("给这个 Token 起个名字（例如：家里的电脑 / 实验室机器）", "手动同步");
-      if (name === null) return;
-      isIssuingToken.value = true;
-      try {
-        const res = await apiFetch("/api/ingest/tokens", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name.trim() })
-        });
-        const data = await res.json();
-        if (data.success) {
-          freshToken.value = (data.token && data.token.token) || "";
-          freshTokenName.value = (data.token && data.token.name) || name.trim();
-          showToast("Token 已生成，请立即复制（之后不再显示明文）", "success");
-          await loadIngestTokens();
-        } else {
-          showToast(data.detail || data.message || "生成失败", "error");
-        }
-      } catch (e) {
-        showToast("生成失败: " + e.message, "error");
-      } finally {
-        isIssuingToken.value = false;
-      }
-    };
-
-    const rotateIngestToken = async (tk) => {
-      if (!window.confirm(`轮换「${tk.name}」？旧 Token 会立即失效，所有使用它的脚本都需要更新。`)) return;
-      tokenActionId.value = tk.id;
-      try {
-        const res = await apiFetch(`/api/ingest/tokens/${tk.id}/rotate`, { method: "POST" });
-        const data = await res.json();
-        if (data.success) {
-          freshToken.value = (data.token && data.token.token) || "";
-          freshTokenName.value = tk.name;
-          showToast("已轮换，旧 Token 立即失效", "success");
-          await loadIngestTokens();
-        } else {
-          showToast(data.detail || data.message || "轮换失败", "error");
-        }
-      } catch (e) {
-        showToast("轮换失败: " + e.message, "error");
-      } finally {
-        tokenActionId.value = 0;
-      }
-    };
-
-    const revokeIngestToken = async (tk) => {
-      if (!window.confirm(`吊销「${tk.name}」？使用该 Token 的脚本会立即失效。`)) return;
-      tokenActionId.value = tk.id;
-      try {
-        const res = await apiFetch(`/api/ingest/tokens/${tk.id}`, { method: "DELETE" });
-        const data = await res.json();
-        if (data.success) {
-          showToast(data.message || "Token 已吊销", "success");
-          if (freshTokenName.value === tk.name) dismissFreshToken();
-          await loadIngestTokens();
-        } else {
-          showToast(data.detail || data.message || "吊销失败", "error");
-        }
-      } catch (e) {
-        showToast("吊销失败: " + e.message, "error");
-      } finally {
-        tokenActionId.value = 0;
-      }
-    };
-
-    const copyFreshToken = async () => {
-      if (!freshToken.value) return;
-      try {
-        await navigator.clipboard.writeText(freshToken.value);
-        showToast("Token 已复制，请妥善保存（脚本已移除，仅在你自己需要时可用）", "success");
-      } catch (e) {
-        showToast("复制失败，请手动选中复制", "error");
-      }
-    };
-
-    const dismissFreshToken = () => {
-      freshToken.value = "";
-      freshTokenName.value = "";
-    };
-
-    const isTokenActive = (tk) => !tk.revoked_at;
-
     const loadSettings = async () => {
       try {
         const res = await apiFetch("/api/settings");
@@ -1427,7 +1318,7 @@ const app = createApp({
         // 合并而非整体替换：loadOverview 与 loadSettings 可能并发写入同一 map，
         // 后返回的若整体覆盖会丢掉另一方刚写入的状态。
         platformStatusMap.value = { ...platformStatusMap.value, ...(data.status || {}) };
-        await Promise.all([loadIngestTokens(), loadAccounts()]);
+        await loadAccounts();
 
       } catch (e) {
         if (e.message !== "UNAUTHORIZED") {
@@ -2098,17 +1989,6 @@ const app = createApp({
       subFilter,
       isSyncing,
       isSaving,
-      ingestTokens,
-      isIssuingToken,
-      tokenActionId,
-      freshToken,
-      freshTokenName,
-      createIngestToken,
-      rotateIngestToken,
-      revokeIngestToken,
-      copyFreshToken,
-      dismissFreshToken,
-      isTokenActive,
       // 平台多账号
       platformMeta,
       accountsFor,

@@ -29,6 +29,14 @@ type Config struct {
 	// 力扣的提交流水接口只在登录态下返回数据，所以历史同步依赖它；
 	// 不填也能用公开接口，但只能拿到最近 AC（国际站）或拿不到（中国站）。
 	LeetCodeCookie string
+
+	// KnownRawIDs 是本库已存在的 raw_id 集合，用于增量同步的早停判断：
+	// 各 adapter 在分页循环里抓到一页后，若本页 RawID 全部已在集合内，
+	// 说明已翻到历史边界，立即停止翻页（本页若有新记录仍照常返回/保存）。
+	KnownRawIDs map[string]struct{}
+	// Incremental 开启时各 adapter 才会按 KnownRawIDs 做早停；关闭则保持全量。
+	// 仅当确认该平台接口按时间倒序返回时才安全，调用方负责保证语义。
+	Incremental bool
 }
 
 type Submission struct {
@@ -285,11 +293,11 @@ func (c *Client) Verify(ctx context.Context, cfg Config) (Profile, error) {
 func (c *Client) SyncSubmissions(ctx context.Context, cfg Config) (SyncResult, error) {
 	switch normalize(cfg.Platform) {
 	case "codeforces":
-		return c.syncCodeforces(ctx, cfg.CFHandle)
+		return c.syncCodeforces(ctx, cfg)
 	case "leetcode":
-		return c.syncLeetCode(ctx, cfg.LeetCode, cfg.LeetCodeCookie)
+		return c.syncLeetCode(ctx, cfg)
 	case "atcoder":
-		return c.syncAtCoder(ctx, cfg.AtCoder)
+		return c.syncAtCoder(ctx, cfg)
 	case "luogu":
 		return c.syncLuogu(ctx, cfg)
 	default:
@@ -416,6 +424,21 @@ func (c *Client) contestsFromUpstream(ctx context.Context, platform string) ([]C
 
 func normalize(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
 
+// allKnown 判断这一批提交是否全部已存在于 KnownRawIDs，用于增量同步的短路：
+// 单请求型 adapter（Codeforces/AtCoder）没有分页循环，抓到全部记录后若都已存在，
+// 直接返回空结果，跳过上千次重复 upsert 事务。集合为空或本批为空时返回 false。
+func allKnown(rows []Submission, known map[string]struct{}) bool {
+	if len(known) == 0 || len(rows) == 0 {
+		return false
+	}
+	for _, r := range rows {
+		if _, ok := known[r.RawID]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 	if err := c.waitForSlot(ctx, endpoint); err != nil {
 		return err
@@ -516,7 +539,8 @@ func (c *Client) verifyCodeforces(ctx context.Context, handle string) (Profile, 
 	return Profile{Platform: "codeforces", Handle: u.Handle, Rating: strconv.Itoa(u.Rating), Rank: u.Rank}, nil
 }
 
-func (c *Client) syncCodeforces(ctx context.Context, handle string) (SyncResult, error) {
+func (c *Client) syncCodeforces(ctx context.Context, cfg Config) (SyncResult, error) {
+	handle := cfg.CFHandle
 	profile, err := c.verifyCodeforces(ctx, handle)
 	if err != nil {
 		return SyncResult{}, err
@@ -548,6 +572,11 @@ func (c *Client) syncCodeforces(ctx context.Context, handle string) (SyncResult,
 	for _, s := range out.Result {
 		pid := fmt.Sprintf("%d%s", s.ContestID, s.Problem.Index)
 		rows = append(rows, Submission{RawID: strconv.Itoa(s.ID), ProblemID: pid, ProblemTitle: s.Problem.Name, Verdict: cfVerdict(s.Verdict), Tags: s.Problem.Tags, Score: s.Problem.Rating, SubmittedAt: time.Unix(s.Creation, 0), URL: fmt.Sprintf("https://codeforces.com/contest/%d/submission/%d", s.ContestID, s.ID), Language: s.Lang, Extra: map[string]any{"contest_id": s.ContestID, "index": s.Problem.Index}})
+	}
+	// 增量：Codeforces 单次最多 1000 条，若全部已存在就直接返回，
+	// 避免每次同步都重跑上千次 upsert 事务（接口按提交 ID 倒序，已是时间倒序）。
+	if cfg.Incremental && allKnown(rows, cfg.KnownRawIDs) {
+		return SyncResult{Platform: "codeforces", Profile: profile, Submissions: nil, Message: "已是最新（无新增提交）"}, nil
 	}
 	return SyncResult{Platform: "codeforces", Profile: profile, Submissions: rows, Message: fmt.Sprintf("从 Codeforces 获取 %d 条提交", len(rows))}, nil
 }
@@ -773,7 +802,7 @@ func leetCodeIsPending(raw string) bool {
 //	国际站 SubmissionDumpNode 有 titleSlug；中国站的没有 titleSlug，只能拿 title 与 url。
 //
 // 翻页用响应里的 lastKey；单页最多 20 条，这里最多翻 40 页（约 800 条）。
-func (c *Client) leetCodeSubmissionList(ctx context.Context, graphqlEP, cookie string) ([]leetCodeSubmissionItem, error) {
+func (c *Client) leetCodeSubmissionList(ctx context.Context, cfg Config, graphqlEP, cookie string) ([]leetCodeSubmissionItem, error) {
 	withSlug := !strings.Contains(graphqlEP, "leetcode.cn")
 	q := `query($offset:Int!,$limit:Int!,$lastKey:String,$questionSlug:String){ submissionList(offset:$offset,limit:$limit,lastKey:$lastKey,questionSlug:$questionSlug){ lastKey hasNext submissions{ id title url timestamp lang statusDisplay isPending } } }`
 	if withSlug {
@@ -810,6 +839,20 @@ func (c *Client) leetCodeSubmissionList(ctx context.Context, graphqlEP, cookie s
 		}
 		if len(out.List.Submissions) == 0 {
 			break
+		}
+		// 增量早停：本页 RawID 全部已存在，说明已翻到历史边界，停止翻页
+		//（本页不追加，避免重复写库）。LeetCode submissionList 按时间倒序返回，安全。
+		if cfg.Incremental {
+			allKnown := true
+			for _, x := range out.List.Submissions {
+				if _, ok := cfg.KnownRawIDs[x.ID]; !ok {
+					allKnown = false
+					break
+				}
+			}
+			if allKnown {
+				break
+			}
 		}
 		for _, x := range out.List.Submissions {
 			items = append(items, leetCodeSubmissionItem{ID: x.ID, Title: x.Title, Slug: x.Slug, URL: x.URL,
@@ -895,7 +938,9 @@ func (c *Client) leetCodeSubmissionsToRows(ctx context.Context, graphqlEP, webBa
 	return rows
 }
 
-func (c *Client) syncLeetCode(ctx context.Context, username, cookie string) (SyncResult, error) {
+func (c *Client) syncLeetCode(ctx context.Context, cfg Config) (SyncResult, error) {
+	username := cfg.LeetCode
+	cookie := cfg.LeetCodeCookie
 	profile, err := c.verifyLeetCode(ctx, username)
 	if err != nil {
 		return SyncResult{}, err
@@ -904,7 +949,7 @@ func (c *Client) syncLeetCode(ctx context.Context, username, cookie string) (Syn
 
 	// 有登录 Cookie：走提交流水接口，拿到全部状态（不只是 AC）。这是"服务端直接去网站同步"的正路。
 	if strings.TrimSpace(cookie) != "" {
-		items, err := c.leetCodeSubmissionList(ctx, graphqlEP, cookie)
+		items, err := c.leetCodeSubmissionList(ctx, cfg, graphqlEP, cookie)
 		if err != nil {
 			return SyncResult{}, err
 		}
@@ -913,6 +958,9 @@ func (c *Client) syncLeetCode(ctx context.Context, username, cookie string) (Syn
 				Message: "提交流水为空：请确认 Cookie 未过期（重新登录力扣后复制一次整段 cookie）"}, nil
 		}
 		rows := c.leetCodeSubmissionsToRows(ctx, graphqlEP, webBase, items)
+		if cfg.Incremental && allKnown(rows, cfg.KnownRawIDs) {
+			return SyncResult{Platform: "leetcode", Profile: profile, Submissions: nil, Message: "已是最新（无新增提交）"}, nil
+		}
 		return SyncResult{Platform: "leetcode", Profile: profile, Submissions: rows,
 			Message: fmt.Sprintf("从 LeetCode 获取 %d 条提交记录（含未通过）", len(rows))}, nil
 	}
@@ -942,6 +990,9 @@ func (c *Client) syncLeetCode(ctx context.Context, username, cookie string) (Syn
 			Timestamp: x.Timestamp, Lang: x.Lang, Status: x.Status})
 	}
 	rows := c.leetCodeSubmissionsToRows(ctx, graphqlEP, webBase, items)
+	if cfg.Incremental && allKnown(rows, cfg.KnownRawIDs) {
+		return SyncResult{Platform: "leetcode", Profile: profile, Submissions: nil, Message: "已是最新（无新增提交）"}, nil
+	}
 	return SyncResult{Platform: "leetcode", Profile: profile, Submissions: rows,
 		Message: fmt.Sprintf("从 LeetCode 获取 %d 条已通过提交（未配置 Cookie，拿不到未通过的记录）", len(rows))}, nil
 }
@@ -1118,7 +1169,8 @@ func (c *Client) verifyAtCoder(ctx context.Context, handle string) (Profile, err
 	}
 	return Profile{Platform: "atcoder", Handle: handle, Solved: len(seen)}, nil
 }
-func (c *Client) syncAtCoder(ctx context.Context, handle string) (SyncResult, error) {
+func (c *Client) syncAtCoder(ctx context.Context, cfg Config) (SyncResult, error) {
+	handle := cfg.AtCoder
 	raw, err := c.atCoderSubmissions(ctx, handle)
 	if err != nil {
 		return SyncResult{}, err
@@ -1137,6 +1189,11 @@ func (c *Client) syncAtCoder(ctx context.Context, handle string) (SyncResult, er
 			Verdict: verdict, Score: int(item.Point), SubmittedAt: time.Unix(item.EpochSecond, 0),
 			URL: "https://atcoder.jp/contests/" + item.ContestID + "/submissions/" + strconv.Itoa(item.ID), Language: item.ProgrammingLanguage,
 			Extra: map[string]any{"contest_id": item.ContestID, "result": item.Result, "point": item.Point}})
+	}
+	// 增量：AtCoder 单次返回全部提交（无分页循环），若全部已存在就直接返回，
+	// 跳过重复写库。该接口返回顺序与早停无关（整批判全），安全。
+	if cfg.Incremental && allKnown(rows, cfg.KnownRawIDs) {
+		return SyncResult{Platform: "atcoder", Profile: profile, Submissions: nil, Message: "已是最新（无新增提交）"}, nil
 	}
 	return SyncResult{Platform: "atcoder", Profile: profile, Submissions: rows, Message: fmt.Sprintf("从 AtCoder 获取 %d 条提交", len(rows))}, nil
 }
@@ -1625,6 +1682,29 @@ func (c *Client) syncLuogu(ctx context.Context, cfg Config) (SyncResult, error) 
 		list := luoguRecords(data)
 		if len(list) == 0 {
 			break
+		}
+		// 增量早停：本页 RawID 全部已存在，说明已翻到历史边界，停止翻页
+		//（本页不追加，避免重复写库）。洛谷 /record/list 按时间倒序返回，安全。
+		if cfg.Incremental {
+			allKnown := true
+			for _, item := range list {
+				rid := luoguString(item["id"])
+				if rid == "" {
+					rid = luoguString(item["rid"])
+				}
+				// 缺 id 的记录无法判定，保守地继续翻页，不早停。
+				if rid == "" {
+					allKnown = false
+					break
+				}
+				if _, known := cfg.KnownRawIDs[rid]; !known {
+					allKnown = false
+					break
+				}
+			}
+			if allKnown {
+				break
+			}
 		}
 		for _, item := range list {
 			submission, ok := luoguRecordToSubmission(item, uid)

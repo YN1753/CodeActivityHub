@@ -103,9 +103,6 @@ type ingestRequest struct {
 	RequestMeta     map[string]any `json:"request_meta"`
 	Source          string         `json:"source"`
 }
-type ingestBatchRequest struct {
-	Submissions []ingestRequest `json:"submissions"`
-}
 
 type platformCount struct {
 	Platform string `gorm:"column:platform"`
@@ -131,13 +128,6 @@ func (a *API) RegisterRoutes(r *gin.Engine) {
 	auth.GET("/settings", a.GetSettings)
 	auth.POST("/settings", a.UpdateSettings)
 	auth.POST("/sync", a.ManualSync)
-	auth.GET("/ingest/token", a.IngestToken)
-	auth.GET("/ingest/tokens", a.ListIngestTokens)
-	auth.POST("/ingest/tokens", a.CreateIngestToken)
-	auth.POST("/ingest/tokens/:id/rotate", a.RotateIngestToken)
-	auth.DELETE("/ingest/tokens/:id", a.RevokeIngestToken)
-	auth.POST("/ingest/submission", a.IngestSubmission)
-	auth.POST("/ingest/submissions", a.IngestBatch)
 	auth.GET("/ingest/events", a.IngestEvents)
 	auth.GET("/contests", a.Contests)
 	auth.GET("/problems", a.Problems)
@@ -359,9 +349,7 @@ func (a *API) ChangePassword(c *gin.Context) {
 		log.Printf("改密写入失败 uid=%d: %v", user.ID, err)
 	}
 	a.DB.Delete(&models.Session{}, "user_id = ?", user.ID)
-	// 改密码应该让所有脚本 token 一起失效，否则"改了密码脚本照样能提交"。
-	a.revokeAllIngestTokens(user.ID)
-	c.JSON(200, gin.H{"success": true, "message": "密码修改成功，请重新登录；浏览器脚本 Token 已全部吊销，需重新生成"})
+	c.JSON(200, gin.H{"success": true, "message": "密码修改成功，请重新登录"})
 }
 
 func (a *API) Overview(c *gin.Context) {
@@ -791,8 +779,34 @@ func (a *API) syncOne(ctx context.Context, uid uint, platform string, cfg platfo
 		}
 		inserted += n
 	}
-	a.savePlatformStatus(uid, result.Profile, "ok", result.Message, len(result.Submissions))
+	// item_count 用真实库内计数，而非本次抓回的条数——
+	// 增量早停后本次只翻回最近若干页，len(result.Submissions) 会偏小。
+	a.savePlatformStatus(uid, result.Profile, "ok", result.Message, a.countSubmissions(uid, result.Platform))
 	return inserted, result.Message, nil
+}
+
+// countSubmissions 返回某用户某平台在库内的提交总数，用于平台状态里的 item_count。
+func (a *API) countSubmissions(uid uint, platform string) int {
+	var n int64
+	a.DB.Model(&models.Submission{}).Where("user_id = ? AND platform = ?", uid, platform).Count(&n)
+	return int(n)
+}
+
+// loadKnownRawIDs 取本库已存在的 raw_id 集合，供增量同步早停判断。
+// submissions 上有 (user_id, platform, raw_id) 复合唯一索引，这个查询很快；
+// LIMIT 20000 只是兜底，正常情况下远不会触顶。
+func (a *API) loadKnownRawIDs(uid uint, platform string) (map[string]struct{}, error) {
+	var ids []string
+	if err := a.DB.Model(&models.Submission{}).
+		Where("user_id = ? AND platform = ?", uid, platform).
+		Limit(20000).Pluck("raw_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	m := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		m[id] = struct{}{}
+	}
+	return m, nil
 }
 
 func (a *API) ManualSync(c *gin.Context) {
@@ -854,6 +868,11 @@ func (a *API) ManualSync(c *gin.Context) {
 	total := 0
 	failed := 0
 	attempted := 0
+	// 并发同步各平台：每个平台跑在独立 goroutine 里，各自持有独立的 150s context
+	// （不共享，避免一个慢平台耗尽后其余被判成"网络波动"）。结果用 mutex 保护后追加。
+	// 节流（waitForSlot 800ms）在平台客户端层按域名互斥，与并发无关，保持原样防风控。
+	var wg sync.WaitGroup
+	var resultsMu sync.Mutex
 	for _, name := range platformList {
 		cfg := a.loadPlatformConfig(uid, name)
 		// 不能同步的情况（平台无接口、洛谷缺 Cookie）先判掉，记成 skipped，
@@ -873,23 +892,37 @@ func (a *API) ManualSync(c *gin.Context) {
 			}
 			continue
 		}
-		// 每个平台各自独立的超时预算：共享同一个 context 会让前一个慢平台
-		// 耗尽后剩余平台必然 deadline exceeded，却被判成"网络波动"写假告警。
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 150*time.Second)
-		inserted, message, err := a.syncOne(ctx, uid, name, cfg)
-		cancel()
-		if err != nil {
-			failed++
-			if message == "" {
-				message = err.Error()
-			}
-			results = append(results, gin.H{"platform": name, "success": false, "message": message})
-			continue
+		// 增量：先取本库已存在的 raw_id 集合传给 adapter 做早停。
+		// 查不到（库空/出错）就回退到全量同步，不影响正确性。
+		if known, err := a.loadKnownRawIDs(uid, name); err == nil && len(known) > 0 {
+			cfg.KnownRawIDs = known
+			cfg.Incremental = true
 		}
-		attempted++
-		total += inserted
-		results = append(results, gin.H{"platform": name, "success": true, "synced": inserted, "message": message})
+		wg.Add(1)
+		go func(name string, cfg platforms.Config) {
+			defer wg.Done()
+			start := time.Now()
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 150*time.Second)
+			defer cancel()
+			inserted, message, err := a.syncOne(ctx, uid, name, cfg)
+			elapsedMs := time.Since(start).Milliseconds()
+			log.Printf("[sync] 平台 %s 同步完成，耗时 %dms，写入 %d 条", name, elapsedMs, inserted)
+			resultsMu.Lock()
+			defer resultsMu.Unlock()
+			if err != nil {
+				failed++
+				if message == "" {
+					message = err.Error()
+				}
+				results = append(results, gin.H{"platform": name, "success": false, "message": message, "elapsed_ms": elapsedMs})
+				return
+			}
+			attempted++
+			total += inserted
+			results = append(results, gin.H{"platform": name, "success": true, "synced": inserted, "message": message, "elapsed_ms": elapsedMs})
+		}(name, cfg)
 	}
+	wg.Wait()
 	if len(results) == 0 {
 		jsonError(c, 400, "请先在设置中配置至少一个平台账号")
 		return
@@ -1316,169 +1349,6 @@ func (a *API) ContestsSync(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"success": true, "platform": platform, "synced": len(rows), "message": fmt.Sprintf("已获取 %d 场比赛", len(rows)), "synced_at": nowUTC()})
-}
-
-// ---------------------------------------------------------------------------
-// 长效脚本 Token：独立于登录会话，只能调用 /api/ingest/*，可单独吊销 / 轮换
-// ---------------------------------------------------------------------------
-
-func ingestTokenResponse(row models.IngestToken, plain string) gin.H {
-	return gin.H{"id": row.ID, "name": row.Name, "token": plain, "token_hint": row.TokenHint,
-		"created_at": row.CreatedAt, "last_used_at": row.LastUsedAt, "revoked_at": row.RevokedAt}
-}
-
-// IngestToken 旧版「每次 GET 都新签一条 token」的接口，前端从未使用，
-// 且 GET 建资源 + 无限流会导致凭证无限堆积。已废弃，改用 POST /api/ingest/tokens
-// （带名称、可在设置页逐条查看/吊销/轮换）。前端只调用复数接口，这里直接 410。
-func (a *API) IngestToken(c *gin.Context) {
-	c.JSON(http.StatusGone, gin.H{"success": false, "message": "该接口已废弃，请改用 POST /api/ingest/tokens 创建长效脚本 Token"})
-}
-
-// issueIngestToken 返回入库记录与明文。明文仅在本次调用返回，之后只能靠 token_hint 辨认。
-func (a *API) issueIngestToken(uid uint, name string) (models.IngestToken, string, error) {
-	plain, hash, err := models.NewIngestTokenValue()
-	if err != nil {
-		return models.IngestToken{}, "", err
-	}
-	if name == "" {
-		name = "浏览器脚本"
-	}
-	row := models.IngestToken{UserID: uid, Name: truncate(name, 64), TokenHash: hash, TokenHint: plain[:12]}
-	if err := a.DB.Create(&row).Error; err != nil {
-		return models.IngestToken{}, "", err
-	}
-	row.TokenHash = ""
-	return row, plain, nil
-}
-
-func (a *API) ListIngestTokens(c *gin.Context) {
-	var rows []models.IngestToken
-	a.DB.Where("user_id = ?", userID(c)).Order("revoked_at, id DESC").Find(&rows)
-	result := make([]gin.H, 0, len(rows))
-	for _, row := range rows {
-		row.TokenHash = ""
-		// 列表不返回明文：token 字段统一为空字符串（与创建/轮换接口区分）。
-		result = append(result, ingestTokenResponse(row, ""))
-	}
-	c.JSON(200, gin.H{"tokens": result})
-}
-
-func (a *API) CreateIngestToken(c *gin.Context) {
-	var req struct {
-		Name string `json:"name"`
-	}
-	_ = c.ShouldBindJSON(&req)
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		name = "浏览器脚本"
-	}
-	uid := userID(c)
-	row, plain, err := a.issueIngestToken(uid, name)
-	if err != nil {
-		jsonError(c, 500, "Token 生成失败")
-		return
-	}
-	c.JSON(200, gin.H{"success": true, "message": "Token 已生成，请立即复制保存（之后不再显示明文）",
-		"token": ingestTokenResponse(row, plain)})
-}
-
-func (a *API) RotateIngestToken(c *gin.Context) {
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		jsonError(c, 400, "Token ID 无效")
-		return
-	}
-	var row models.IngestToken
-	if a.DB.Where("id = ? AND user_id = ?", id, userID(c)).First(&row).Error != nil {
-		jsonError(c, 404, "Token 不存在")
-		return
-	}
-	if row.RevokedAt != "" {
-		jsonError(c, 400, "该 Token 已吊销，无法轮换")
-		return
-	}
-	plain, hash, err := models.NewIngestTokenValue()
-	if err != nil {
-		jsonError(c, 500, "Token 生成失败")
-		return
-	}
-	if err := a.DB.Model(&row).Updates(map[string]any{"token_hash": hash, "token_hint": plain[:12], "last_used_at": ""}).Error; err != nil {
-		jsonError(c, 500, "轮换失败")
-		return
-	}
-	row.TokenHash = ""
-	row.TokenHint = plain[:12]
-	c.JSON(200, gin.H{"success": true, "message": "已轮换，旧 Token 立即失效，请更新浏览器脚本",
-		"token": ingestTokenResponse(row, plain)})
-}
-
-func (a *API) RevokeIngestToken(c *gin.Context) {
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		jsonError(c, 400, "Token ID 无效")
-		return
-	}
-	result := a.DB.Model(&models.IngestToken{}).Where("id = ? AND user_id = ? AND revoked_at = ''", id, userID(c)).
-		Update("revoked_at", nowUTC())
-	if result.Error != nil {
-		jsonError(c, 500, "吊销失败")
-		return
-	}
-	if result.RowsAffected == 0 {
-		jsonError(c, 404, "Token 不存在或已吊销")
-		return
-	}
-	c.JSON(200, gin.H{"success": true, "message": "Token 已吊销，使用该 Token 的脚本会立即失效"})
-}
-
-// revokeAllIngestTokens 改密码时连带吊销，避免"改了密码脚本还能用"。
-func (a *API) revokeAllIngestTokens(uid uint) {
-	if err := a.DB.Model(&models.IngestToken{}).Where("user_id = ? AND revoked_at = ''", uid).Update("revoked_at", nowUTC()).Error; err != nil {
-		log.Printf("批量吊销 ingest token 失败 uid=%d: %v", uid, err)
-	}
-}
-
-// ingestSubmissions 顺序写入一批提交，遇到首个错误即返回（已插入条数, 错误）。
-// 单条与批量 ingest 共用此循环，仅响应字段不同（见两个 handler）。
-func (a *API) ingestSubmissions(uid uint, items []ingestRequest) (int, error) {
-	inserted := 0
-	for _, item := range items {
-		n, err := a.saveSubmission(uid, item)
-		if err != nil {
-			return inserted, err
-		}
-		inserted += n
-	}
-	return inserted, nil
-}
-
-func (a *API) IngestSubmission(c *gin.Context) {
-	var req ingestRequest
-	if c.ShouldBindJSON(&req) != nil {
-		jsonError(c, 400, "请求格式错误")
-		return
-	}
-	inserted, err := a.ingestSubmissions(userID(c), []ingestRequest{req})
-	if err != nil {
-		jsonError(c, 500, "提交记录保存失败")
-		log.Printf("ingest 写入失败: %v", err)
-		return
-	}
-	c.JSON(200, gin.H{"success": true, "inserted": inserted, "message": "提交记录已接收"})
-}
-func (a *API) IngestBatch(c *gin.Context) {
-	var req ingestBatchRequest
-	if c.ShouldBindJSON(&req) != nil {
-		jsonError(c, 400, "请求格式错误")
-		return
-	}
-	inserted, err := a.ingestSubmissions(userID(c), req.Submissions)
-	if err != nil {
-		jsonError(c, 500, "提交记录保存失败")
-		log.Printf("ingest 写入失败: %v", err)
-		return
-	}
-	c.JSON(200, gin.H{"success": true, "inserted": inserted, "received": len(req.Submissions)})
 }
 
 // verdictAliases 把各平台五花八门的判定收敛成看板识别的几档。
