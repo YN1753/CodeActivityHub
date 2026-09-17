@@ -32,6 +32,7 @@ func Open(path string) (*gorm.DB, error) {
 		&models.PlatformStatus{}, &models.Submission{}, &models.IngestEvent{},
 		&models.PlatformAccount{},
 		&models.Problem{}, &models.ProblemTag{},
+		&models.Contest{},
 	); err != nil {
 		return nil, err
 	}

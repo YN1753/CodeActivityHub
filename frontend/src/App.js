@@ -347,6 +347,8 @@ const app = createApp({
 
     // --- Contests State ---
     const contests = ref([]);
+    // 后端赛程已落库，最后同步时间（RFC3339 字符串）由 GET 响应带回，用于页面头部展示。
+    const lastContestSync = ref("");
     const problems = ref([]);
     const problemsPlatform = ref("codeforces");
     const problemsPage = ref(1);
@@ -1278,12 +1280,13 @@ const app = createApp({
 
     let lastContestsLoadedAt = 0;
     const loadContests = async (force = false) => {
-      // 切换标签页时 3 分钟内复用已有数据，避免反复整表下载。
-      if (!force && contests.value.length && Date.now() - lastContestsLoadedAt < 3 * 60 * 1000) return;
+      // 后端已落库，读库很快；仅保留 60s 小缓存，避免来回切换标签页时反复刷屏。
+      if (!force && contests.value.length && Date.now() - lastContestsLoadedAt < 60 * 1000) return;
       try {
         const res = await apiFetch("/api/contests?platform=all");
         const data = await res.json();
         contests.value = data.contests || [];
+        lastContestSync.value = data.last_contest_sync || "";
         lastContestsLoadedAt = Date.now();
       } catch (e) {
         if (e.message !== "UNAUTHORIZED") {
@@ -1299,17 +1302,25 @@ const app = createApp({
         const res = await apiFetch("/api/contests/sync", { method: "POST" });
         const data = await res.json();
         if (data.success) {
-          showToast(data.message || "比赛日程刷新成功！", "success");
+          // 后端明确告诉用户"有没有更新"：新增 N 场 / 更新 N 场 / 无变化。
+          showToast(data.message || "比赛日程已检查", "success");
+          lastContestSync.value = data.synced_at || lastContestSync.value;
           await loadContests(true);
         } else {
-          showToast(data.message || "刷新比赛异常", "error");
+          showToast(data.message || "检查比赛异常", "error");
         }
       } catch (e) {
-        showToast("刷新比赛请求失败: " + e.message, "error");
+        showToast("检查比赛请求失败: " + e.message, "error");
       } finally {
         isSyncingContests.value = false;
       }
     };
+
+    // 头部展示"最后更新于 X"：后端未返回或为空时显示占位。
+    const lastContestSyncText = computed(() => {
+      if (!lastContestSync.value) return "暂无同步记录";
+      return formatTimeAgo(lastContestSync.value);
+    });
 
     const loadSettings = async () => {
       try {
@@ -2063,7 +2074,8 @@ const app = createApp({
       formatContestDate,
       contestPlatformDot,
       contestPlatformLabel,
-      syncContestsNow
+      syncContestsNow,
+      lastContestSyncText
     };
   }
 });

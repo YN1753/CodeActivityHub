@@ -1327,28 +1327,124 @@ func SeedPlatformAccounts(db *gorm.DB) {
 
 func (a *API) Contests(c *gin.Context) {
 	platform := c.DefaultQuery("platform", "all")
+	uid := userID(c)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
 	defer cancel()
-	rows, err := a.platformClient().Contests(ctx, platform)
-	if err != nil {
-		jsonError(c, 502, err.Error())
-		return
+
+	rows, mode := a.readContestsFromDB(platform), "cached"
+	// 库为空（首次或被清空）→ 自动回源拉一次上游并落库，本次 mode=fetched。
+	if len(rows) == 0 {
+		if _, _, _, err := a.syncContestsIntoDB(ctx, platform, uid); err != nil {
+			jsonError(c, 502, err.Error())
+			return
+		}
+		rows = a.readContestsFromDB(platform)
+		mode = "fetched"
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].StartTimestamp < rows[j].StartTimestamp })
-	c.JSON(200, gin.H{"contests": rows, "platform": platform, "mode": "on_demand"})
+	lastSync := loadConfigMap(a.DB, uid)["last_contest_sync"]
+	c.JSON(200, gin.H{"contests": rows, "platform": platform, "mode": mode, "last_contest_sync": lastSync})
+}
+
+// readContestsFromDB 按 start_timestamp 升序读库；platform 非 all/空时按平台过滤。
+func (a *API) readContestsFromDB(platform string) []models.Contest {
+	var rows []models.Contest
+	q := a.DB.Order("start_timestamp ASC")
+	if platform != "all" && platform != "" {
+		q = q.Where("platform = ?", platform)
+	}
+	q.Find(&rows)
+	return rows
+}
+
+// toModelContest 把平台传输结构映射成可落库的赛程行，ID 用 "platform:比赛ID" 拼成。
+func toModelContest(p platforms.Contest) models.Contest {
+	return models.Contest{
+		ID:              p.Platform + ":" + p.ID,
+		Platform:        p.Platform,
+		Name:            p.Name,
+		StartTimestamp:  p.StartTimestamp,
+		DurationSeconds: p.DurationSeconds,
+		URL:             p.URL,
+	}
+}
+
+// syncContestsIntoDB 拉上游赛程并增量写入 contests 表：按 ID 做差集统计
+// 新增/有变化的条数，OnConflict upsert 更新 Name/StartTimestamp/DurationSeconds/
+// URL + UpdatedAt，并记录最后同步时间到 user_configs。返回上游总条数、新增数、
+// 变化数。上游失败时返回错误且不改动已有数据（缓存的意义就是保留旧值）。
+func (a *API) syncContestsIntoDB(ctx context.Context, platform string, uid uint) (total, added, changed int, err error) {
+	upstream, ferr := a.platformClient().Contests(ctx, platform)
+	if ferr != nil {
+		return 0, 0, 0, ferr
+	}
+	var existing []models.Contest
+	a.DB.Find(&existing)
+	byID := make(map[string]models.Contest, len(existing))
+	for _, e := range existing {
+		byID[e.ID] = e
+	}
+	now := time.Now()
+	for _, p := range upstream {
+		mc := toModelContest(p)
+		if _, ok := byID[mc.ID]; !ok {
+			added++
+		} else if diff := byID[mc.ID]; diff.Name != mc.Name || diff.StartTimestamp != mc.StartTimestamp ||
+			diff.DurationSeconds != mc.DurationSeconds || diff.URL != mc.URL {
+			changed++
+		}
+		mc.UpdatedAt = now
+		if uerr := a.DB.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"platform":         mc.Platform,
+				"name":             mc.Name,
+				"start_timestamp":  mc.StartTimestamp,
+				"duration_seconds": mc.DurationSeconds,
+				"url":              mc.URL,
+				"updated_at":       mc.UpdatedAt,
+			}),
+		}).Create(&mc).Error; uerr != nil {
+			return len(upstream), added, changed, uerr
+		}
+	}
+	a.setConfigValue(uid, "last_contest_sync", nowUTC())
+	return len(upstream), added, changed, nil
 }
 
 func (a *API) ContestsSync(c *gin.Context) {
 	platform := c.DefaultQuery("platform", "all")
+	uid := userID(c)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
 	defer cancel()
+	startedAt := time.Now()
+
+	// 绕过 5 分钟进程内缓存，强制重新请求上游。
 	a.platformClient().InvalidateContestCache()
-	rows, err := a.platformClient().Contests(ctx, platform)
+	total, added, changed, err := a.syncContestsIntoDB(ctx, platform, uid)
 	if err != nil {
+		// 不删除已有数据：上游挂了就保留旧赛程，让日历还能用。
 		jsonError(c, 502, err.Error())
 		return
 	}
-	c.JSON(200, gin.H{"success": true, "platform": platform, "synced": len(rows), "message": fmt.Sprintf("已获取 %d 场比赛", len(rows)), "synced_at": nowUTC()})
+
+	elapsed := time.Since(startedAt).Milliseconds()
+	message := "无变化"
+	switch {
+	case added > 0:
+		message = fmt.Sprintf("新增 %d 场比赛", added)
+	case changed > 0:
+		message = fmt.Sprintf("更新 %d 场比赛", changed)
+	}
+	c.JSON(200, gin.H{
+		"success":    true,
+		"platform":   platform,
+		"synced":     total,
+		"added":      added,
+		"changed":    changed,
+		"elapsed_ms": elapsed,
+		"synced_at":  nowUTC(),
+		"message":    message,
+	})
 }
 
 // verdictAliases 把各平台五花八门的判定收敛成看板识别的几档。

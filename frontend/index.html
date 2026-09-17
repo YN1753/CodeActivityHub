@@ -343,7 +343,7 @@
 
         <!-- ============ 比赛日历 ============ -->
         <div v-show="currentTab === 'contests'" class="space-y-6">
-          <!-- 工具条：平台筛选 + 搜索 + 刷新（状态筛选由下方分组取代） -->
+          <!-- 工具条：平台筛选 + 搜索 + 检查更新（状态筛选由下方分组取代） -->
           <div class="ui-card p-4 flex flex-wrap items-center gap-2">
             <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
               <button v-for="f in [['all','全部'],['codeforces','Codeforces'],['atcoder','AtCoder'],['luogu','洛谷']]" :key="f[0]"
@@ -352,15 +352,16 @@
                                contestFilter === f[0] ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800']">{{ f[1] }}</button>
             </div>
             <input v-model="contestSearch" type="text" placeholder="搜索比赛…" class="ui-input w-auto flex-1 min-w-[160px]">
+            <span class="text-xs text-slate-400 shrink-0">最后更新于 {{ lastContestSyncText }}</span>
             <button @click="syncContestsNow" :disabled="isSyncingContests" class="btn-secondary shrink-0">
-              {{ isSyncingContests ? '刷新中…' : '刷新比赛' }}
+              {{ isSyncingContests ? '检查中…' : '检查更新' }}
             </button>
           </div>
 
           <!-- 空状态 -->
           <div v-if="!liveContests.length && !upcomingContests.length && !pastContests.length" class="ui-card p-12 text-center">
             <p class="text-sm text-slate-500">没有匹配的比赛</p>
-            <p class="ui-hint mt-1">点右上角「刷新比赛」从各平台拉取最新赛程</p>
+            <p class="ui-hint mt-1">点右上角「检查更新」从各平台拉取最新赛程</p>
           </div>
 
           <!-- 进行中 -->

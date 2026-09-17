@@ -107,3 +107,17 @@ type ProblemTag struct {
 	ProblemID string `gorm:"primaryKey;size:128;column:problem_id" json:"problem_id"`
 	Tag       string `gorm:"primaryKey;size:64;index" json:"tag"`
 }
+
+// Contest 是平台赛程的本地缓存行。赛程由 GET /api/contests（库空自动回源）
+// 与 POST /api/contests/sync（增量 upsert）写入，读取全部落在本地 SQLite，
+// 不再每次切换标签页都实时打上游。ID 由 "platform:平台比赛ID" 拼成，
+// 保证跨平台唯一；平台筛选走 Platform 上的索引。
+type Contest struct {
+	ID              string    `gorm:"primaryKey;size:255" json:"id"`
+	Platform        string    `gorm:"index;size:32" json:"platform"`
+	Name            string    `gorm:"size:300" json:"name"`
+	StartTimestamp  int64     `json:"start_timestamp"`
+	DurationSeconds int64     `json:"duration_seconds"`
+	URL             string    `gorm:"size:500" json:"url"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
