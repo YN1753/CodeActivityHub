@@ -9,7 +9,6 @@ type User struct {
 	Username     string    `gorm:"uniqueIndex;size:32;not null" json:"username"`
 	PasswordHash string    `gorm:"not null" json:"-"`
 	Salt         string    `gorm:"not null" json:"-"`
-	IsAdmin      bool      `json:"is_admin"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -32,7 +31,6 @@ type PlatformStatus struct {
 	Platform      string `gorm:"primaryKey;size:32" json:"platform"`
 	Status        string `gorm:"not null;default:unconfigured" json:"status"`
 	Message       string `json:"message"`
-	ItemCount     int    `json:"item_count"`
 	Rating        string `json:"rating"`
 	LastCheckedAt string `json:"last_checked_at"`
 }
@@ -72,7 +70,6 @@ type Submission struct {
 	Date            string    `gorm:"index:idx_submission_user_date;size:16" json:"date"`
 	SubmissionURL   string    `json:"submission_url"`
 	CodeLanguage    string    `json:"code_language"`
-	ExtraData       string    `json:"extra_data"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 

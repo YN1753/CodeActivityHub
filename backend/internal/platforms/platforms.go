@@ -50,7 +50,6 @@ type Submission struct {
 	SubmittedAt  time.Time
 	URL          string
 	Language     string
-	Extra        map[string]any
 }
 
 type Problem struct {
@@ -571,7 +570,7 @@ func (c *Client) syncCodeforces(ctx context.Context, cfg Config) (SyncResult, er
 	rows := make([]Submission, 0, len(out.Result))
 	for _, s := range out.Result {
 		pid := fmt.Sprintf("%d%s", s.ContestID, s.Problem.Index)
-		rows = append(rows, Submission{RawID: strconv.Itoa(s.ID), ProblemID: pid, ProblemTitle: s.Problem.Name, Verdict: cfVerdict(s.Verdict), Tags: s.Problem.Tags, Score: s.Problem.Rating, SubmittedAt: time.Unix(s.Creation, 0), URL: fmt.Sprintf("https://codeforces.com/contest/%d/submission/%d", s.ContestID, s.ID), Language: s.Lang, Extra: map[string]any{"contest_id": s.ContestID, "index": s.Problem.Index}})
+		rows = append(rows, Submission{RawID: strconv.Itoa(s.ID), ProblemID: pid, ProblemTitle: s.Problem.Name, Verdict: cfVerdict(s.Verdict), Tags: s.Problem.Tags, Score: s.Problem.Rating, SubmittedAt: time.Unix(s.Creation, 0), URL: fmt.Sprintf("https://codeforces.com/contest/%d/submission/%d", s.ContestID, s.ID), Language: s.Lang})
 	}
 	// 增量：Codeforces 单次最多 1000 条，若全部已存在就直接返回，
 	// 避免每次同步都重跑上千次 upsert 事务（接口按提交 ID 倒序，已是时间倒序）。
@@ -1188,7 +1187,7 @@ func (c *Client) syncAtCoder(ctx context.Context, cfg Config) (SyncResult, error
 		rows = append(rows, Submission{RawID: strconv.Itoa(item.ID), ProblemID: item.ProblemID, ProblemTitle: item.ProblemID,
 			Verdict: verdict, Score: int(item.Point), SubmittedAt: time.Unix(item.EpochSecond, 0),
 			URL: "https://atcoder.jp/contests/" + item.ContestID + "/submissions/" + strconv.Itoa(item.ID), Language: item.ProgrammingLanguage,
-			Extra: map[string]any{"contest_id": item.ContestID, "result": item.Result, "point": item.Point}})
+		})
 	}
 	// 增量：AtCoder 单次返回全部提交（无分页循环），若全部已存在就直接返回，
 	// 跳过重复写库。该接口返回顺序与早停无关（整批判全），安全。
@@ -1791,19 +1790,10 @@ func luoguRecordToSubmission(item map[string]any, uid string) (Submission, bool)
 		return Submission{}, false
 	}
 	submittedAt := time.Unix(int64(submitSeconds), 0)
-	extra := map[string]any{
-		"score": luoguInt(item["score"]), "uid": uid,
-		"time_ms": luoguInt(item["time"]), "memory_kb": luoguInt(item["memory"]),
-	}
-	// 洛谷记录里 language 是数字枚举，含义随站点版本变化，先原样留存不做猜测映射。
-	if langID := luoguInt(item["language"]); langID > 0 {
-		extra["language_id"] = langID
-	}
 	return Submission{
 		RawID: rawID, ProblemID: problemID, ProblemTitle: title, Verdict: verdict,
 		Difficulty: difficulty, SubmittedAt: submittedAt,
-		URL:   "https://www.luogu.com.cn/record/" + rawID,
-		Extra: extra,
+		URL: "https://www.luogu.com.cn/record/" + rawID,
 	}, true
 }
 

@@ -78,15 +78,6 @@ type passwordRequest struct {
 type syncRequest struct {
 	Platform string `json:"platform"`
 }
-type verifyRequest struct {
-	Platform       string `json:"platform"`
-	CFHandle       string `json:"cf_handle"`
-	LuoguUID       string `json:"luogu_uid"`
-	LeetCode       string `json:"leetcode_username"`
-	AtCoder        string `json:"atcoder_handle"`
-	LuoguCookie    string `json:"luogu_cookie"`
-	LeetCodeCookie string `json:"leetcode_cookie"`
-}
 type ingestRequest struct {
 	Platform        string         `json:"platform"`
 	RawID           string         `json:"raw_id"`
@@ -99,7 +90,6 @@ type ingestRequest struct {
 	SubmittedAt     string         `json:"submitted_at"`
 	SubmissionURL   string         `json:"submission_url"`
 	CodeLanguage    string         `json:"code_language"`
-	ExtraData       map[string]any `json:"extra_data"`
 	RequestMeta     map[string]any `json:"request_meta"`
 	Source          string         `json:"source"`
 }
@@ -133,7 +123,6 @@ func (a *API) RegisterRoutes(r *gin.Engine) {
 	auth.GET("/problems", a.Problems)
 	auth.POST("/problems/sync", a.ProblemsSync)
 	auth.POST("/contests/sync", a.ContestsSync)
-	auth.POST("/verify", a.Verify)
 	auth.GET("/accounts", a.ListAccounts)
 	auth.POST("/accounts", a.CreateAccount)
 	auth.POST("/accounts/:id/verify", a.VerifyAccount)
@@ -306,7 +295,7 @@ func isUniqueViolation(err error) bool {
 }
 
 func userResponse(user models.User) gin.H {
-	return gin.H{"id": user.ID, "username": user.Username, "is_admin": user.IsAdmin}
+	return gin.H{"id": user.ID, "username": user.Username}
 }
 func (a *API) createSession(uid uint) (string, error) {
 	buf := make([]byte, 32)
@@ -677,12 +666,6 @@ func (a *API) loadPlatformConfig(uid uint, platform string) platforms.Config {
 	}
 }
 
-func (a *API) configFromVerify(req verifyRequest) platforms.Config {
-	return platforms.Config{Platform: req.Platform, CFHandle: req.CFHandle, LuoguUID: req.LuoguUID,
-		LeetCode: req.LeetCode, AtCoder: req.AtCoder,
-		LuoguCookie: req.LuoguCookie, LeetCodeCookie: req.LeetCodeCookie}
-}
-
 // platformSupportsOnlineVerify 标出哪些平台有公开的在线校验 / 历史同步能力
 // （Codeforces / LeetCode / AtCoder / 洛谷）。
 // 注意：账号校验与历史同步目前口径一致，若将来分化需拆开。
@@ -720,10 +703,10 @@ func platformConfigured(cfg platforms.Config, platform string) bool {
 	return false
 }
 
-func (a *API) savePlatformStatus(uid uint, profile platforms.Profile, status, message string, count int) {
+func (a *API) savePlatformStatus(uid uint, profile platforms.Profile, status, message string) {
 	now := nowUTC()
-	row := models.PlatformStatus{UserID: uid, Platform: profile.Platform, Status: status, Message: message, ItemCount: count, Rating: profile.Rating, LastCheckedAt: now}
-	a.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}, {Name: "platform"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "message", "item_count", "rating", "last_checked_at"})}).Create(&row)
+	row := models.PlatformStatus{UserID: uid, Platform: profile.Platform, Status: status, Message: message, Rating: profile.Rating, LastCheckedAt: now}
+	a.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}, {Name: "platform"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "message", "rating", "last_checked_at"})}).Create(&row)
 }
 
 func submissionToIngest(platform string, s platforms.Submission) ingestRequest {
@@ -731,7 +714,7 @@ func submissionToIngest(platform string, s platforms.Submission) ingestRequest {
 	return ingestRequest{Platform: platform, RawID: s.RawID, ProblemID: s.ProblemID, ProblemTitle: s.ProblemTitle,
 		Verdict: s.Verdict, Tags: tags, Difficulty: s.Difficulty, DifficultyScore: s.Score,
 		SubmittedAt: s.SubmittedAt.Format(time.RFC3339), SubmissionURL: s.URL, CodeLanguage: s.Language,
-		ExtraData: s.Extra, Source: "manual_api"}
+		Source: "manual_api"}
 }
 
 // networkErrMarkers 网络类错误的特征串：这类错误是瞬时的（网络波动/站点限流/代理断连），
@@ -764,11 +747,11 @@ func (a *API) syncOne(ctx context.Context, uid uint, platform string, cfg platfo
 	result, err := a.platformClient().SyncSubmissions(ctx, cfg)
 	if err != nil {
 		if isTimeoutErr(err) {
-			a.savePlatformStatus(uid, platforms.Profile{Platform: platform}, "warning", syncTimeoutHint, 0)
+			a.savePlatformStatus(uid, platforms.Profile{Platform: platform}, "warning", syncTimeoutHint)
 			// 返回友好提示而不是裸 Go 错误，避免前端 toast 弹出吓人的英文堆栈。
 			return 0, syncTimeoutHint, err
 		}
-		a.savePlatformStatus(uid, platforms.Profile{Platform: platform}, "error", err.Error(), 0)
+		a.savePlatformStatus(uid, platforms.Profile{Platform: platform}, "error", err.Error())
 		return 0, "", err
 	}
 	inserted := 0
@@ -779,17 +762,8 @@ func (a *API) syncOne(ctx context.Context, uid uint, platform string, cfg platfo
 		}
 		inserted += n
 	}
-	// item_count 用真实库内计数，而非本次抓回的条数——
-	// 增量早停后本次只翻回最近若干页，len(result.Submissions) 会偏小。
-	a.savePlatformStatus(uid, result.Profile, "ok", result.Message, a.countSubmissions(uid, result.Platform))
+	a.savePlatformStatus(uid, result.Profile, "ok", result.Message)
 	return inserted, result.Message, nil
-}
-
-// countSubmissions 返回某用户某平台在库内的提交总数，用于平台状态里的 item_count。
-func (a *API) countSubmissions(uid uint, platform string) int {
-	var n int64
-	a.DB.Model(&models.Submission{}).Where("user_id = ? AND platform = ?", uid, platform).Count(&n)
-	return int(n)
 }
 
 // loadKnownRawIDs 取本库已存在的 raw_id 集合，供增量同步早停判断。
@@ -933,46 +907,6 @@ func (a *API) ManualSync(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"success": failed == 0, "data": gin.H{"mode": "manual", "platform": requested, "synced": total, "results": results, "synced_at": nowUTC(), "message": fmt.Sprintf("手动同步完成，写入 %d 条提交记录", total)}})
-}
-
-func (a *API) Verify(c *gin.Context) {
-	var req verifyRequest
-	if c.ShouldBindJSON(&req) != nil {
-		jsonError(c, 400, "请求格式错误")
-		return
-	}
-	platform := strings.ToLower(strings.TrimSpace(req.Platform))
-	if platform == "" {
-		jsonError(c, 400, "platform 必填")
-		return
-	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
-	defer cancel()
-	profile, err := a.platformClient().Verify(ctx, a.configFromVerify(req))
-	if err != nil {
-		// 平台没有公开校验接口时返回 ErrUnsupportedVerify：这是"不支持"，不是"连接失败"。
-		// 若记成 error，设置页会挂一条用户永远清不掉的告警。
-		if errors.Is(err, platforms.ErrUnsupportedVerify) {
-			a.savePlatformStatus(userID(c), platforms.Profile{Platform: platform}, "unsupported", err.Error(), 0)
-			c.JSON(200, gin.H{"valid": false, "supported": false, "success": false, "message": err.Error()})
-			return
-		}
-		// 超时类错误是瞬时的，记成 warning 而不是 error，别让红条常驻。
-		if isTimeoutErr(err) {
-			a.savePlatformStatus(userID(c), platforms.Profile{Platform: platform}, "warning", syncTimeoutHint, 0)
-			c.JSON(200, gin.H{"valid": false, "supported": true, "success": false, "timeout": true, "message": "验证请求超时，请稍后重试；账号配置不受影响"})
-			return
-		}
-		a.savePlatformStatus(userID(c), platforms.Profile{Platform: platform}, "error", err.Error(), 0)
-		c.JSON(400, gin.H{"valid": false, "supported": true, "success": false, "message": err.Error()})
-		return
-	}
-	message := "账号验证成功"
-	if profile.Note != "" {
-		message = profile.Note
-	}
-	a.savePlatformStatus(userID(c), profile, "ok", message, profile.Solved)
-	c.JSON(200, gin.H{"valid": true, "success": true, "message": message, "profile": profile})
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,11 +1436,10 @@ func (a *API) saveSubmission(uid uint, req ingestRequest) (int, error) {
 	verdict := normalizeVerdict(req.Verdict)
 	submittedAt := normalizeSubmittedAt(req.SubmittedAt)
 	tags, _ := json.Marshal(req.Tags)
-	extra, _ := json.Marshal(req.ExtraData)
 	meta, _ := json.Marshal(req.RequestMeta)
 	now := nowUTC()
 	id := fmt.Sprintf("u%d_%s_%s", uid, platform, raw)
-	submission := models.Submission{ID: id, UserID: uid, Platform: platform, RawID: raw, ProblemID: problemID, ProblemTitle: title, Verdict: verdict, Tags: string(tags), Difficulty: req.Difficulty, DifficultyScore: req.DifficultyScore, SubmittedAt: submittedAt, Date: effectiveDate(parseTime(submittedAt)), SubmissionURL: req.SubmissionURL, CodeLanguage: req.CodeLanguage, ExtraData: string(extra)}
+	submission := models.Submission{ID: id, UserID: uid, Platform: platform, RawID: raw, ProblemID: problemID, ProblemTitle: title, Verdict: verdict, Tags: string(tags), Difficulty: req.Difficulty, DifficultyScore: req.DifficultyScore, SubmittedAt: submittedAt, Date: effectiveDate(parseTime(submittedAt)), SubmissionURL: req.SubmissionURL, CodeLanguage: req.CodeLanguage}
 	var inserted int
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// 先判断是否为新记录：Upsert 无论插入还是更新都返回 RowsAffected=1，
@@ -1519,20 +1452,17 @@ func (a *API) saveSubmission(uid uint, req ingestRequest) (int, error) {
 		if existing == 0 {
 			inserted = 1
 		}
-		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}, {Name: "platform"}, {Name: "raw_id"}}, DoUpdates: clause.AssignmentColumns([]string{"problem_id", "problem_title", "verdict", "tags", "difficulty", "difficulty_score", "submitted_at", "date", "submission_url", "code_language", "extra_data"})}).Create(&submission).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}, {Name: "platform"}, {Name: "raw_id"}}, DoUpdates: clause.AssignmentColumns([]string{"problem_id", "problem_title", "verdict", "tags", "difficulty", "difficulty_score", "submitted_at", "date", "submission_url", "code_language"})}).Create(&submission).Error; err != nil {
 			return err
 		}
-		event := models.IngestEvent{ID: fmt.Sprintf("%d_%s_%d", uid, raw, time.Now().UnixNano()), UserID: uid, Platform: platform, RawID: raw, RequestMeta: string(meta), ResponseData: string(extra), Source: req.Source, ReceivedAt: now}
+		event := models.IngestEvent{ID: fmt.Sprintf("%d_%s_%d", uid, raw, time.Now().UnixNano()), UserID: uid, Platform: platform, RawID: raw, RequestMeta: string(meta), ResponseData: "", Source: req.Source, ReceivedAt: now}
 		if event.Source == "" {
 			event.Source = "browser"
 		}
 		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}, {Name: "platform"}, {Name: "raw_id"}}, DoUpdates: clause.AssignmentColumns([]string{"request_meta", "response_data", "source", "received_at"})}).Create(&event).Error; err != nil {
 			return err
 		}
-		var count int64
-		tx.Model(&models.Submission{}).Where("user_id = ? AND platform = ?", uid, platform).Count(&count)
-		status := models.PlatformStatus{UserID: uid, Platform: platform, Status: "ok", Message: "浏览器脚本实时接入", ItemCount: int(count), LastCheckedAt: now}
-		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}, {Name: "platform"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "message", "item_count", "last_checked_at"})}).Create(&status).Error
+		return nil
 	})
 	if err != nil {
 		return 0, err

@@ -51,7 +51,7 @@ func Open(path string) (*gorm.DB, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := db.Create(&models.User{ID: 1, Username: "admin", PasswordHash: hash, Salt: salt, IsAdmin: true}).Error; err != nil {
+		if err := db.Create(&models.User{ID: 1, Username: "admin", PasswordHash: hash, Salt: salt}).Error; err != nil {
 			return nil, err
 		}
 		log.Printf("已创建默认管理员账号 admin，初始随机密码：%s （请尽快登录修改）", pw)
